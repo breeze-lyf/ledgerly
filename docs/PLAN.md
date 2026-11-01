@@ -10,6 +10,15 @@
 - `server/service.ts`: invoice mirror, event timeline, webhook handling, and SSE push to the UI.
 - `web/`: chat on the left; invoice cards, detail view, status timeline and actions on the right; mode badges and a stats strip.
 
+## PayPal Agent Toolkit (@paypal/agent-toolkit 1.11.0)
+- The LLM tool schemas for invoices, orders and refunds come from `PayPalAgentToolkit` (`/openai`, getTools(), 13 tools). Ledgerly adds its own higher-level tools: create_invoice_series, refund_invoice, draft_reminder, reconcile, ask_clarification.
+- Execution: in mock mode, toolkit calls go through an adapter to our MockPayPalClient, because the toolkit hardcodes the PayPal hosts and cannot reach a mock. In sandbox mode, `PAYPAL_TOOLKIT_EXECUTION=toolkit` sends calls to the toolkit's own handleToolCall; the default `ours` uses our sandbox client.
+- Every tool call returns a trace; the UI shows a "PayPal Agent Toolkit · <tool>" chip.
+
+## Agent rules
+- "This month" means due date OR issue date falls in the current calendar month (server timezone). Unpaid means SENT, PARTIALLY_PAID, or overdue (due date before today and not PAID/CANCELLED/REFUNDED). Drafts are excluded from unpaid but reported separately.
+- Nothing is sent or refunded until the user confirms (a button, or a reply like "yes" or "go ahead"). Confirm and cancel replies are handled deterministically, without the LLM.
+
 ## PayPal APIs
 - OAuth2: `/v1/oauth2/token`
 - Invoicing v2: generate-next-invoice-number, create draft, get, list, send, remind, cancel, record payment, record refund
@@ -21,7 +30,9 @@
 ## Milestones (Beijing time)
 - 11/01 ✅ Skeleton: mock end-to-end, LLM + fallback, BASE_PATH
 - 11/02–03: Get sandbox keys; validate the sandbox client against the real API; register a webhook (needs a public URL, via demo.yufeng.fun)
-- 11/04–05: Agent depth: multi-turn clarification, dunning drafts by tone, reconciliation Q&A ("who hasn't paid", "how much this month"), partial refunds, confirmations before sends
+- 11/01 ✅ Round 2 (done early): PayPal Agent Toolkit integration, clarification, confirm-before-send, dunning tones, reconciliation, partial refunds, UI states
+- 11/04 (new target): first submittable build; 11/05 early review
+- 11/04–05 (was): Agent depth: multi-turn clarification, dunning drafts by tone, reconciliation Q&A ("who hasn't paid", "how much this month"), partial refunds, confirmations before sends
 - 11/06–07: UI polish: timeline, invoice preview, empty states, mobile layout, error handling
 - 11/08: Deploy to demo.yufeng.fun/paypal-agent/ (nginx + systemd), sandbox webhooks live
 - 11/09: Tests, seed demo data, README with screenshots, architecture diagram
@@ -32,5 +43,6 @@
 - PayPal sandbox app credentials and webhook ID (`/home/box/.secrets/paypal_sandbox.env`)
 - Production LLM key for the deployed app (the provider is swappable via env)
 - Decide how recurring billing works: N scheduled invoices (current) or Subscriptions API
-- "This month" semantics in reconciliation (by due date vs. issue date; whether drafts count)
+- Live sandbox test of toolkit execution (needs keys)
+- Confirm replies are labelled `fallback` in the UI (they are deterministic); consider a `system` label
 - Auth for the public demo (shared demo session / rate limiting)

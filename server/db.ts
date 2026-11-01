@@ -34,3 +34,19 @@ export function object(id: string) {
     .get(id) as any;
   return r ? JSON.parse(r.data) : undefined;
 }
+
+for (const [table, column, type] of [
+  ["messages", "session_id", "TEXT DEFAULT 'default'"],
+  ["messages", "payload", "TEXT"],
+  ["invoices", "refunded", "REAL DEFAULT 0"],
+  ["invoices", "paid_amount", "REAL DEFAULT 0"],
+]) {
+  if (
+    !(db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (c) => c.name === column,
+    )
+  )
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+db.exec(`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, pending TEXT);
+CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, session_id TEXT, name TEXT, args TEXT, status TEXT DEFAULT 'pending');`);

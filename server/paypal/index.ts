@@ -7,6 +7,7 @@ export interface PayPalClient {
   generateInvoiceNumber(): Promise<any>;
   createDraftInvoice(body: Body): Promise<any>;
   getInvoice(id: string): Promise<any>;
+  updateInvoice(id: string, body: Body): Promise<any>;
   listInvoices(): Promise<any>;
   sendInvoice(id: string, body?: Body): Promise<any>;
   remindInvoice(id: string, body?: Body): Promise<any>;
@@ -17,6 +18,8 @@ export interface PayPalClient {
   getOrder(id: string): Promise<any>;
   captureOrder(id: string): Promise<any>;
   refundCapture(id: string, body?: Body): Promise<any>;
+  getRefund(id: string): Promise<any>;
+  getCapture(id: string): Promise<any>;
   verifyWebhookSignature(body: Body): Promise<any>;
 }
 export class SandboxPayPalClient implements PayPalClient {
@@ -70,6 +73,13 @@ export class SandboxPayPalClient implements PayPalClient {
   }
   getInvoice(id: string) {
     return this.request("/v2/invoicing/invoices/" + encodeURIComponent(id));
+  }
+  updateInvoice(id: string, b: Body) {
+    return this.request(
+      "/v2/invoicing/invoices/" + encodeURIComponent(id),
+      "PUT",
+      b,
+    );
   }
   listInvoices() {
     return this.request("/v2/invoicing/invoices");
@@ -129,6 +139,12 @@ export class SandboxPayPalClient implements PayPalClient {
       b,
     );
   }
+  getCapture(id: string) {
+    return this.request("/v2/payments/captures/" + encodeURIComponent(id));
+  }
+  getRefund(id: string) {
+    return this.request("/v2/payments/refunds/" + encodeURIComponent(id));
+  }
   verifyWebhookSignature(b: Body) {
     return this.request(
       "/v1/notifications/verify-webhook-signature",
@@ -163,6 +179,9 @@ export class MockPayPalClient implements PayPalClient {
   }
   async getInvoice(id: string) {
     return this.get(id);
+  }
+  async updateInvoice(id: string, b: Body) {
+    return saveObject({ ...b, id });
   }
   async listInvoices() {
     return {
@@ -231,6 +250,12 @@ export class MockPayPalClient implements PayPalClient {
       amount: b.amount || o.amount,
       capture_id: id,
     });
+  }
+  async getCapture(id: string) {
+    return this.get(id);
+  }
+  async getRefund(id: string) {
+    return this.get(id);
   }
   async verifyWebhookSignature() {
     return { verification_status: "SUCCESS" };

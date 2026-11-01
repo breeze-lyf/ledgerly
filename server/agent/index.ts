@@ -1,240 +1,330 @@
-import { action } from "../service.js";
+import { confirmAction, resolve } from "../service.js";
 import { db } from "../db.js";
 import { llmConfigured } from "../config.js";
-const string = { type: "string" },
-  number = { type: "number" };
-const definitions: Record<string, any> = {
-  create_invoice: {
-    client_name: string,
-    client_email: string,
-    items: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: { name: string, quantity: number, unit_amount: number },
-        required: ["name", "quantity", "unit_amount"],
-      },
-    },
-    currency: string,
-    due_in_days: number,
-    recurrence: {
-      type: "object",
-      properties: {
-        interval: { type: "string", enum: ["month"] },
-        count: number,
-      },
-      required: ["interval", "count"],
-    },
-    note: string,
-    send: { type: "boolean" },
-  },
-  send_invoice: { invoice_id: string },
-  remind_invoice: { invoice_id: string, message: string },
-  cancel_invoice: { invoice_id: string },
-  record_payment: { invoice_id: string, amount: number },
-  refund: { invoice_id: string, capture_id: string, amount: number },
-  create_payment_link: {
-    amount: number,
-    currency: string,
-    description: string,
-  },
-  list_invoices: { status: string, client: string, period: string },
-  draft_reminder: { invoice_id: string, tone: string },
-};
-const tools = Object.entries(definitions).map(([name, properties]) => ({
+import { execute, paypalTools, trace } from "./toolkit.js";
+const own = (name: string, properties: any) => ({
   type: "function",
   function: {
     name,
     description: name.replaceAll("_", " "),
-    parameters: {
-      type: "object",
-      properties,
-      required:
-        name === "create_invoice"
-          ? ["client_name", "items", "currency"]
-          : name === "create_payment_link"
-            ? ["amount", "currency", "description"]
-            : [],
-    },
+    parameters: { type: "object", properties },
   },
-}));
+});
+const str = { type: "string" };
+const tools = [
+  ...paypalTools,
+  own("refund_invoice", { client: str, invoice_id: str, amount: { type: "number" } }),
+  own("create_invoice_series", {
+    client_name: str,
+    client_email: str,
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: str,
+          quantity: { type: "number" },
+          unit_amount: { type: "number" },
+        },
+      },
+    },
+    recurrence: { type: "object", properties: { count: { type: "number" } } },
+  }),
+  own("draft_reminder", {
+    invoice_id: str,
+    tone: { type: "string", enum: ["friendly", "firm", "final"] },
+  }),
+  own("reconcile", {
+    query: { type: "string", enum: ["paid", "unpaid", "overdue"] },
+    period: str,
+  }),
+  own("ask_clarification", { question: str }),
+];
+function state(session: string) {
+  return JSON.parse(
+    (db.prepare("SELECT pending FROM sessions WHERE id=?").get(session) as any)
+      ?.pending || "null",
+  );
+}
+function save(session: string, pending: any) {
+  db.prepare("INSERT OR REPLACE INTO sessions VALUES (?,?)").run(
+    session,
+    JSON.stringify(pending),
+  );
+}
 function parse(s: string): [string, any] {
-  let m = s.match(/invoice\s+(.+?)\s+\$([\d,.]+)(\/month)?\s*(.*)/i);
-  if (m) {
-    const count = m[4].match(/for\s+(\d+)\s+months?/i);
+  if (/who.*(hasn.?t|not).*paid|unpaid|how much.*paid|overdue/i.test(s))
     return [
-      "create_invoice",
+      "reconcile",
       {
-        client_name: m[1],
+        query: /how much.*paid/i.test(s)
+          ? "paid"
+          : /overdue/i.test(s)
+            ? "overdue"
+            : "unpaid",
+        period: /month/i.test(s) ? "month" : undefined,
+      },
+    ];
+  if (/^(?:please )?(?:create )?invoice\b/i.test(s)) {
+    const amount = s.match(/\$([\d,.]+)/),
+      email = s.match(/[\w.+-]+@[\w.-]+\.[a-z]+/i)?.[0];
+    const client = s
+      .replace(/^(?:please )?(?:create )?invoice\s*/i, "")
+      .split(/\$|for\s+\d+\s+months/i)[0]
+      .replace(email || "\0", "")
+      .trim();
+    const count = Number(s.match(/for\s+(\d+)\s+months?/i)?.[1] || 1);
+    return [
+      count > 1 ? "create_invoice_series" : "create_invoice",
+      {
+        client_name: client,
+        client_email: email,
+        items: amount
+          ? [
+              {
+                name: "Services",
+                quantity: 1,
+                unit_amount: Number(amount[1].replaceAll(",", "")),
+              },
+            ]
+          : undefined,
+        currency: "USD",
+        recurrence: { count },
+      },
+    ];
+  }
+  if (/list|show.*invoices/i.test(s)) return ["list_invoices", {}];
+  if (/payment link/i.test(s))
+    return [
+      "create_order",
+      {
+        currencyCode: "USD",
         items: [
           {
-            name:
-              m[4].replace(/for\s+\d+\s+months?.*/i, "").trim() || "Services",
-            quantity: 1,
-            unit_amount: Number(m[2].replaceAll(",", "")),
+            name: "Payment",
+            itemCost: Number(s.match(/\$([\d,.]+)/)?.[1]),
+            itemTotal: Number(s.match(/\$([\d,.]+)/)?.[1]),
           },
         ],
-        currency: "USD",
-        ...(m[3] || count
-          ? {
-              recurrence: { interval: "month", count: Number(count?.[1] || 1) },
-            }
-          : {}),
       },
     ];
-  }
-  if (/who.*(hasn.?t|not).*paid|unpaid/i.test(s))
+  if (/refund/i.test(s))
     return [
-      "list_invoices",
-      { status: "UNPAID", period: /month/i.test(s) ? "month" : undefined },
-    ];
-  if (/list|show.*invoices/i.test(s)) return ["list_invoices", {}];
-  if (/payment link/i.test(s)) {
-    m = s.match(/\$([\d,.]+)/);
-    if (!m)
-      throw Error(
-        "Include an amount, for example: payment link $50 for design.",
-      );
-    return [
-      "create_payment_link",
+      "refund_invoice",
       {
-        amount: Number(m[1].replaceAll(",", "")),
-        currency: "USD",
-        description: s.replace(/.*\$[\d,.]+\s*(for)?\s*/i, "") || "Payment",
+        invoice_id:
+          s.match(/(?:to|for|on)\s+(.+)$/i)?.[1] ||
+          s.replace(/refund|\$[\d,.]+/gi, "").trim(),
+        amount: s.match(/\$([\d,.]+)/)
+          ? Number(s.match(/\$([\d,.]+)/)![1].replaceAll(",", ""))
+          : undefined,
       },
     ];
-  }
-  if (/refund/i.test(s)) {
-    const amount = s.match(/\$([\d,.]+)/);
-    const ref = s.match(/(?:on|to|for)\s+(.+)$/i);
-    return [
-      "refund",
-      {
-        invoice_id: ref?.[1] || s.replace(/refund|\$[\d,.]+/gi, "").trim(),
-        amount: amount ? Number(amount[1].replaceAll(",", "")) : undefined,
-      },
-    ];
-  }
   for (const [re, name] of [
-    [/remind|reminder/i, "remind_invoice"],
-    [/cancel/i, "cancel_invoice"],
+    [/remind|reminder/i, "draft_reminder"],
+    [/cancel/i, "cancel_sent_invoice"],
     [/send/i, "send_invoice"],
   ] as const)
-    if (re.test(s)) {
-      const ref = s.match(/(?:to|for)\s+(.+)$/i);
+    if (re.test(s))
       return [
         name,
         {
           invoice_id:
-            ref?.[1] ||
+            s.match(/(?:to|for)\s+(.+)$/i)?.[1] ||
             s.replace(/send|remind|cancel|invoice|a reminder/gi, "").trim(),
+          tone: s.match(/friendly|firm|final/i)?.[0]?.toLowerCase(),
         },
       ];
-    }
   throw Error(
-    "Try “Invoice Acme $800/month maintenance for 3 months”, “Send invoice to Acme”, or “Who hasn’t paid?”",
+    "Try “Invoice Acme $800”, “Who hasn’t paid this month?” or “Refund $200 to Acme”.",
   );
 }
-export async function chat(message: string) {
-  db.prepare("INSERT INTO messages(role,content) VALUES (?,?)").run(
-    "user",
-    message,
-  );
+export async function chat(message: string, session = "default") {
+  db.prepare(
+    "INSERT INTO messages(role,content,session_id) VALUES (?,?,?)",
+  ).run("user", message, session);
   let reply = "",
     cards: any[] = [],
-    mode: "llm" | "fallback" = "fallback";
-  if (llmConfigured) {
-    try {
-      const history = (
-        db
-          .prepare(
-            "SELECT role,content FROM messages ORDER BY id DESC LIMIT 20",
-          )
-          .all() as any[]
-      ).reverse();
-      const messages: any[] = [
-        {
-          role: "system",
-          content:
-            "You are Ledgerly, a concise invoicing assistant. Use tools for all financial operations and look up invoice IDs with list_invoices. Monthly requests must create recurrence with the requested count. Never claim an operation succeeded without a tool result. Invoice refunds record an external refund; capture refunds actually move money.",
-        },
-        ...history,
-      ];
-      for (let round = 0; round < 5; round++) {
-        const r = await fetch(
-          process.env.LLM_BASE_URL!.replace(/\/$/, "") + "/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer " + process.env.LLM_API_KEY,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: process.env.LLM_MODEL,
-              messages,
-              tools,
-            }),
-            signal: AbortSignal.timeout(30000),
-          },
-        );
-        if (!r.ok) throw Error("LLM unavailable");
-        const data = (await r.json()) as any;
-        const m = data.choices?.[0]?.message;
-        if (!m) throw Error("Invalid LLM response");
-        messages.push(m);
-        if (!m.tool_calls?.length) {
-          reply = m.content || "Done.";
-          mode = "llm";
-          break;
-        }
-        for (const call of m.tool_calls) {
-          let result;
-          try {
-            result = await action(
-              call.function.name,
-              JSON.parse(call.function.arguments),
-            );
-            cards.push(...result);
-          } catch (e) {
-            result = { error: (e as Error).message };
-          }
-          messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: JSON.stringify(result),
-          });
-        }
-        mode = "llm";
-        reply =
-          "Your request has been processed. Review the cards for details.";
+    traces: any[] = [],
+    mode = "fallback",
+    notice = "";
+  const run = async (name: string, args: any) => {
+    if (name === "ask_clarification") {
+      save(session, { question: args.question });
+      return [{ kind: "clarification", text: args.question }];
+    }
+    if (["create_invoice", "create_invoice_series"].includes(name)) {
+      const b = args.primary_recipients?.[0]?.billing_info;
+      if (
+        !args.client_name &&
+        !b?.business_name &&
+        !b?.name?.given_name &&
+        !b?.name?.surname
+      ) {
+        save(session, { name, args, missing: "client_name" });
+        return [{ kind: "clarification", text: "Who is the client?" }];
       }
-    } catch {
-      if (cards.length) {
-        reply =
-          "Completed the actions shown below. The AI connection was interrupted.";
-        mode = "llm";
-      } else mode = "fallback";
+      if (!args.items?.length) {
+        save(session, { name, args, missing: "amount" });
+        return [
+          { kind: "clarification", text: "What amount should I invoice?" },
+        ];
+      }
     }
-  }
-  if (mode === "fallback") {
-    try {
-      const [name, args] = parse(message);
-      cards = await action(name, args);
+    if (name === "send_invoice") {
+      const i = resolve(args.invoice_id);
+      args.invoice_id = i.id;
+      if (!i.email) {
+        save(session, {
+          name,
+          args: { ...args, invoice_id: i.id },
+          missing: "email",
+        });
+        return [
+          { kind: "clarification", text: "What is the client email address?" },
+        ];
+      }
+    }
+    traces.push(trace(name));
+    return execute(name, args, session);
+  };
+  try {
+    const pending = state(session);
+    const latest = db
+      .prepare(
+        "SELECT * FROM actions WHERE session_id=? AND status='pending' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(session) as any;
+    const decision = message.trim().toLowerCase()
+      .replace(/[’]/g, "'").replace(/[,.!?]+/g, " ").replace(/\s+/g, " ").trim();
+    const confirms = /^(?:yes(?: please)?(?: send(?: it)?)?|go ahead(?: and send(?: it)?)?|ok(?:ay)?(?: please)?(?: send(?: it)?)?|confirm|sure(?: please)?|(?:please )?send(?: it)?(?: please)?)$/;
+    const cancels = /^(?:no(?: thanks| please)?|don'?t send(?: it)?|do not send(?: it)?|cancel(?: it)?)(?: please)?$/;
+    if (latest && confirms.test(decision)) {
+      cards = await confirmAction(latest.id, session);
+      traces.push(trace(latest.name));
+    } else if (latest && cancels.test(decision)) {
+      cards = await confirmAction(latest.id, session, true);
+      reply = "Action cancelled.";
+    } else if (pending?.missing) {
+      const { name, args, missing } = pending;
+      if (missing === "amount") {
+        const n = Number(message.match(/[\d,.]+/)?.[0]?.replaceAll(",", ""));
+        if (!(n > 0)) throw Error("Please provide a positive amount.");
+        args.items = [{ name: "Services", quantity: 1, unit_amount: n }];
+      }
+      if (missing === "client_name") args.client_name = message.trim();
+      if (missing === "email") {
+        const email = message.match(/[\w.+-]+@[\w.-]+\.[a-z]+/i)?.[0];
+        if (!email) throw Error("Please provide a valid email address.");
+        for (const id of args.invoice_ids || [args.invoice_id]) {
+          const i = resolve(id);
+          const data = JSON.parse(i.data);
+          data.primary_recipients[0].billing_info.email_address = email;
+          // Sandbox invoices need their recipient updated remotely before sending.
+          await (
+            await import("../paypal/index.js")
+          ).paypal.updateInvoice(i.paypal_id, data);
+          db.prepare("UPDATE invoices SET email=?,data=? WHERE id=?").run(
+            email,
+            JSON.stringify(data),
+            i.id,
+          );
+        }
+      }
+      save(session, null);
+      cards = await run(name, args);
+    } else {
+      let used = false;
+      if (llmConfigured) {
+        try {
+          const history = (
+            db
+              .prepare(
+                "SELECT role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 20",
+              )
+              .all(session) as any[]
+          ).reverse();
+          const messages: any[] = [
+            {
+              role: "system",
+              content:
+                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
+            },
+            ...history,
+          ];
+          for (let n = 0; n < 5; n++) {
+            const r = await fetch(
+              process.env.LLM_BASE_URL!.replace(/\/$/, "") +
+                "/chat/completions",
+              {
+                method: "POST",
+                headers: {
+                  Authorization: "Bearer " + process.env.LLM_API_KEY,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: process.env.LLM_MODEL,
+                  messages,
+                  tools,
+                }),
+                signal: AbortSignal.timeout(30000),
+              },
+            );
+            if (!r.ok) throw Error("LLM unavailable");
+            const m = ((await r.json()) as any).choices?.[0]?.message;
+            if (!m) throw Error("Invalid LLM response");
+            messages.push(m);
+            if (!m.tool_calls?.length) {
+              reply = m.content || "Review the details below.";
+              used = true;
+              break;
+            }
+            for (const call of m.tool_calls) {
+              let result;
+              try {
+                result = await run(
+                  call.function.name,
+                  JSON.parse(call.function.arguments),
+                );
+                cards.push(...result);
+              } catch (e) {
+                result = { error: (e as Error).message };
+              }
+              messages.push({
+                role: "tool",
+                tool_call_id: call.id,
+                content: JSON.stringify(result),
+              });
+            }
+            used = true;
+          }
+          mode = "llm";
+        } catch {
+          notice =
+            "AI connection unavailable. Ledgerly is using its built-in assistant.";
+          used = cards.length > 0;
+        }
+      }
+      if (!used) {
+        const [name, args] = parse(message);
+        cards = await run(name, args);
+        mode = "fallback";
+      }
+    }
+    if (!reply)
       reply =
-        name === "create_invoice"
-          ? `Created ${cards.length} draft invoice${cards.length === 1 ? "" : "s"} for ${args.client_name}${cards.length > 1 ? ", one month apart" : ""}. Review and send when ready.`
-          : name === "list_invoices"
-            ? `${cards.length} invoice${cards.length === 1 ? "" : "s"} found.`
-            : name === "refund"
-              ? "Refund recorded. Invoice refunds track money returned outside Ledgerly."
-              : "Done — your details are below.";
-    } catch (e) {
-      reply = (e as Error).message;
-    }
+        cards.find((c) => c.kind === "clarification")?.text ||
+        (cards.some((c) => c.kind === "pending_action")
+          ? "Review the details, then confirm or cancel. Nothing has been sent or refunded yet."
+          : cards.some((c) => c.kind === "summary")
+            ? "Here is your reconciliation summary."
+            : "Done — review the details below.");
+  } catch (e) {
+    reply = (e as Error).message;
   }
-  db.prepare("INSERT INTO messages(role,content) VALUES (?,?)").run(
-    "assistant",
-    reply,
-  );
-  return { reply, cards, mode };
+  const payload = { cards, traces, mode, notice };
+  db.prepare(
+    "INSERT INTO messages(role,content,session_id,payload) VALUES (?,?,?,?)",
+  ).run("assistant", reply, session, JSON.stringify(payload));
+  return { reply, ...payload };
 }

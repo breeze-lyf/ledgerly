@@ -1,9 +1,14 @@
 import dotenv from "dotenv";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 dotenv.config();
 const secretFile =
   process.env.PAYPAL_ENV_FILE || "/home/box/.secrets/paypal_sandbox.env";
-if (existsSync(secretFile)) dotenv.config({ path: secretFile });
+if (existsSync(secretFile)) {
+  // A copied .env contains blank credentials; those must not mask the secret file.
+  const secrets = dotenv.parse(readFileSync(secretFile));
+  for (const [key, value] of Object.entries(secrets))
+    if (key !== "PAYPAL_MODE" && !process.env[key]) process.env[key] = value;
+}
 export const base =
   "/" +
   (process.env.BASE_PATH || "/").split("/").filter(Boolean).join("/") +

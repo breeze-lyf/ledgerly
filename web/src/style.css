@@ -662,3 +662,78 @@ footer span:last-child {
     display: none;
   }
 }
+
+.tool-chip {
+  display: inline-block;
+  padding: 4px 8px;
+  margin: 6px 4px 3px 0;
+  background: #e8f1fb;
+  color: #285c86;
+  border-radius: 12px;
+  font-size: 10px;
+}
+.summary {
+  overflow: auto;
+}
+.summary table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+}
+.summary td,
+.summary th {
+  text-align: left;
+  padding: 7px;
+  border-bottom: 1px solid #ddd;
+}
+.notice {
+  font-size: 12px;
+  color: #93620c;
+}
+.dots {
+  animation: pulse 1s infinite;
+}
+.skeleton {
+  padding: 28px;
+  animation: pulse 1.3s infinite;
+}
+.skeleton p {
+  height: 45px;
+  background: #eef0f3;
+  border-radius: 8px;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.chat-card button {
+  padding: 8px 12px;
+}
+.error {
+  position: relative;
+  background: #fff0ed;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.app[aria-busy="true"] button:disabled::after {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 5px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -5,7 +5,14 @@ import { readFileSync } from "node:fs";
 import { base, mock, llmConfigured } from "./config.js";
 import { db, invoice, invoices, object, saveObject } from "./db.js";
 import { paypal } from "./paypal/index.js";
-import { action, listeners, simulated, webhook } from "./service.js";
+import {
+  action,
+  confirmAction,
+  listeners,
+  simulated,
+  webhook,
+} from "./service.js";
+import { toolkitHealth, execute } from "./agent/toolkit.js";
 import { chat } from "./agent/index.js";
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -17,6 +24,7 @@ api.get("/health", (_req, res) =>
     paypalMode: mock ? "mock" : "sandbox",
     llm: llmConfigured,
     basePath: base,
+    toolkit: toolkitHealth,
   }),
 );
 api.post(
@@ -24,11 +32,38 @@ api.post(
   wrap(async (req: any, res: any) => {
     if (typeof req.body.message !== "string" || !req.body.message.trim())
       return res.status(400).json({ error: "Message required" });
-    res.json(await chat(req.body.message.slice(0, 8000)));
+    res.json(
+      await chat(
+        req.body.message.slice(0, 8000),
+        req.body.session_id || "default",
+      ),
+    );
   }),
 );
-api.get("/messages", (_req, res) =>
-  res.json(db.prepare("SELECT * FROM messages ORDER BY id LIMIT 200").all()),
+api.get("/messages", (req, res) =>
+  res.json(
+    (
+      db
+        .prepare(
+          "SELECT * FROM messages WHERE session_id=? ORDER BY id LIMIT 200",
+        )
+        .all(String(req.query.session_id || "default")) as any[]
+    ).map((m) => ({ ...m, ...JSON.parse(m.payload || "{}") })),
+  ),
+);
+api.post(
+  "/actions/:id/:operation",
+  wrap(async (req: any, res: any) => {
+    if (!["confirm", "cancel"].includes(req.params.operation))
+      throw Error("Invalid action");
+    res.json({
+      cards: await confirmAction(
+        req.params.id,
+        req.body.session_id || "default",
+        req.params.operation === "cancel",
+      ),
+    });
+  }),
 );
 api.get("/invoices", (_req, res) => res.json(invoices()));
 api.get("/invoices/:id", (req, res) => {
@@ -48,10 +83,21 @@ for (const name of ["send", "remind", "cancel", "refund"])
     "/invoices/:id/" + name,
     wrap(async (req: any, res: any) =>
       res.json(
-        await action(name === "refund" ? "refund" : name + "_invoice", {
-          ...req.body,
-          invoice_id: req.params.id,
-        }),
+        await execute(
+          (
+            {
+              send: "send_invoice",
+              remind: "send_invoice_reminder",
+              cancel: "cancel_sent_invoice",
+              refund: "record_refund_for_invoice",
+            } as Record<string, string>
+          )[name],
+          {
+            ...req.body,
+            invoice_id: req.params.id,
+          },
+          req.body.session_id || "default",
+        ),
       ),
     ),
   );

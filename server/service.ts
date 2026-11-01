@@ -1,3 +1,4 @@
+import { mock } from "./config.js";
 import { randomUUID } from "node:crypto";
 import { db, invoice, invoices, object, saveObject } from "./db.js";
 import { paypal } from "./paypal/index.js";
@@ -17,13 +18,212 @@ export function event(id: string, type: string, data: any = {}) {
   return e;
 }
 export function resolve(ref: string) {
+  if (!ref?.trim()) throw Error("Specify an invoice or client.");
   const x =
     invoice(ref) ||
     invoices().find((i) => i.client.toLowerCase().includes(ref.toLowerCase()));
   if (!x) throw Error("Invoice not found. Choose an invoice from the panel.");
   return x;
 }
-export async function action(name: string, a: any): Promise<any[]> {
+export function pendingAction(name: string, args: any, session = "default") {
+  const existing = (db.prepare(
+    "SELECT * FROM actions WHERE session_id=? AND name=? AND status='pending' ORDER BY rowid DESC",
+  ).all(session, name) as any[]).find((row) => {
+    const previous = JSON.parse(row.args);
+    const ids = args.invoice_ids || [args.invoice_id];
+    const previousIds = previous.invoice_ids || [previous.invoice_id];
+    return name === "send_invoice" && ids.length === previousIds.length &&
+      ids.every((id: string) => previousIds.includes(id));
+  });
+  if (existing) return {
+    kind: "pending_action", id: existing.id, name,
+    label: "Confirm send", args: JSON.parse(existing.args),
+  };
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO actions(id,session_id,name,args) VALUES (?,?,?,?)",
+  ).run(id, session, name, JSON.stringify(args));
+  return {
+    kind: "pending_action",
+    id,
+    name,
+    label: name === "refund" ? "Confirm refund" : "Confirm send",
+    args,
+  };
+}
+export async function confirmAction(
+  id: string,
+  session = "default",
+  cancel = false,
+) {
+  const row = db
+    .prepare("SELECT * FROM actions WHERE id=? AND session_id=?")
+    .get(id, session) as any;
+  if (!row || row.status !== "pending")
+    throw Error("Action is no longer pending");
+  if (cancel) {
+    db.prepare("UPDATE actions SET status='cancelled' WHERE id=?").run(id);
+    return [];
+  }
+  const args = JSON.parse(row.args);
+  const ids = args.invoice_ids || [args.invoice_id];
+  if (row.name === "send_invoice")
+    for (const id of ids)
+      if (!resolve(id).email) {
+        db.prepare("INSERT OR REPLACE INTO sessions VALUES (?,?)").run(
+          session,
+          JSON.stringify({
+            name: "send_invoice",
+            args: { ...args, invoice_id: id },
+            missing: "email",
+          }),
+        );
+        throw Error(
+          "What is the client email? Provide it in chat before confirming.",
+        );
+      }
+  db.prepare("UPDATE actions SET status='executing' WHERE id=?").run(id);
+  try {
+    if (row.name === "send_invoice")
+      for (const id of ids)
+        if (resolve(id).status !== "DRAFT")
+          throw Error("Only draft invoices can be sent");
+    if (row.name === "refund") {
+      if (args.invoice_id) validateRefund(resolve(args.invoice_id), args.amount);
+      if (!args.capture_id)
+        validateRefund(resolve(args.invoice_id), args.amount);
+      else {
+        const c =
+          object(args.capture_id) || (await paypal.getCapture(args.capture_id));
+        const remaining = Number(c.amount.value) - Number(c.refunded || 0);
+        if (
+          remaining <= 0 ||
+          (args.amount !== undefined &&
+            (!(args.amount > 0) || args.amount > remaining))
+        )
+          throw Error(
+            `Refund exceeds remaining refundable ${remaining.toFixed(2)}`,
+          );
+      }
+    }
+    const results = [];
+    for (const id of ids)
+      results.push(
+        ...(await (
+          await import("./agent/toolkit.js")
+        ).execute(row.name, { ...args, invoice_id: id }, session, true)),
+      );
+    db.prepare("UPDATE actions SET status='confirmed' WHERE id=?").run(row.id);
+    return results;
+  } catch (e) {
+    db.prepare("UPDATE actions SET status='pending' WHERE id=?").run(row.id);
+    throw e;
+  }
+}
+export async function action(
+  name: string,
+  a: any,
+  confirmed = false,
+  session = "default",
+): Promise<any[]> {
+  if (name === "refund_invoice") {
+    const ref = a.invoice_id || a.client || "";
+    const i = invoice(ref) || invoices().find((i) =>
+      ["PAID", "PARTIALLY_REFUNDED"].includes(i.status) && ref &&
+      i.client.toLowerCase().includes(ref.toLowerCase()));
+    if (!i) throw Error("No paid invoice found for this client or invoice.");
+    const amount = validateRefund(i, a.amount);
+    const data = JSON.parse(i.data);
+    const capture_id = data.capture_id || data.payments?.transactions?.find(
+      (p: any) => p.capture_id)?.capture_id;
+    return action("refund", { invoice_id: i.id, amount, currency: i.currency,
+      ...(capture_id ? { capture_id } : {}) }, false, session);
+  }
+  if (name === "create_invoice_series") name = "create_invoice";
+  if (name === "reconcile") {
+    const today = localDate(),
+      month = today.slice(0, 7);
+    const all = invoices(),
+      scoped = all.filter(
+        (i) =>
+          a.period !== "month" ||
+          i.due_date?.startsWith(month) ||
+          (JSON.parse(i.data).detail?.invoice_date || i.created_at).startsWith(
+            month,
+          ),
+      );
+    const drafts = scoped.filter((i) => i.status === "DRAFT").length;
+    const rows = scoped
+      .filter((i) => i.status !== "DRAFT")
+      .filter((i) =>
+        a.query === "paid"
+          ? Number(i.paid_amount) > 0 ||
+            ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(i.status)
+          : a.query === "overdue"
+            ? i.due_date < today &&
+              !["PAID", "CANCELLED", "REFUNDED"].includes(i.status)
+            : ["SENT", "PARTIALLY_PAID"].includes(i.status) ||
+              (i.due_date < today &&
+                !["PAID", "CANCELLED", "REFUNDED"].includes(i.status)),
+      );
+    const totals: Record<string, number> = {};
+    for (const i of rows)
+      totals[i.currency] =
+        (totals[i.currency] || 0) +
+        (a.query === "paid"
+          ? Number(i.paid_amount) || i.amount
+          : i.amount - Number(i.paid_amount));
+    return [
+      {
+        kind: "summary",
+        query: a.query,
+        rows,
+        totals,
+        drafts,
+        description: `${drafts} drafts excluded. Month uses due date OR issue date in server local time.`,
+      },
+    ];
+  }
+  if (name === "send_invoice" && !confirmed) {
+    const ids = a.invoice_ids || [a.invoice_id];
+    for (const id of ids)
+      if (resolve(id).status !== "DRAFT")
+        throw Error("Only draft invoices can be sent");
+    return [pendingAction(name, a, session)];
+  }
+  if (name === "refund" && !confirmed) {
+    if (a.capture_id) {
+      if (a.invoice_id) validateRefund(resolve(a.invoice_id), a.amount);
+      const capture =
+        object(a.capture_id) ||
+        saveObject(await paypal.getCapture(a.capture_id));
+      if (!capture) throw Error("Capture not found");
+      const remaining =
+        Number(capture.amount.value) - Number(capture.refunded || 0);
+      if (
+        remaining <= 0 ||
+        (a.amount !== undefined &&
+          (!(Number(a.amount) > 0) || Number(a.amount) > remaining))
+      )
+        throw Error(
+          `Refund exceeds remaining refundable ${remaining.toFixed(2)}`,
+        );
+      return [pendingAction(name, a, session)];
+    }
+    const ref = a.invoice_id || "";
+    const i =
+      invoice(ref) ||
+      invoices().find(
+        (i) =>
+          ["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"].includes(i.status) &&
+          ref &&
+          i.client.toLowerCase().includes(ref.toLowerCase()),
+      ) ||
+      resolve(ref);
+    validateRefund(i, a.amount);
+    return [pendingAction(name, { ...a, invoice_id: i.id }, session)];
+  }
+
   if (name === "create_invoice") {
     const count = Math.min(24, Math.max(1, Number(a.recurrence?.count || 1)));
     const group = count > 1 ? randomUUID() : null;
@@ -42,6 +242,7 @@ export async function action(name: string, a: any): Promise<any[]> {
         detail: {
           currency_code: a.currency || "USD",
           note: a.note,
+          invoice_date: a.invoice_date || localDate(),
           payment_term: {
             term_type: "DUE_ON_DATE",
             due_date: due.toISOString().slice(0, 10),
@@ -50,7 +251,7 @@ export async function action(name: string, a: any): Promise<any[]> {
         primary_recipients: [
           {
             billing_info: {
-              name: { full_name: a.client_name },
+              business_name: a.client_name,
               ...(a.client_email ? { email_address: a.client_email } : {}),
             },
           },
@@ -89,10 +290,17 @@ export async function action(name: string, a: any): Promise<any[]> {
           },
         });
       event(p.id, "INVOICE.CREATED");
-      if (a.send) await action("send_invoice", { invoice_id: p.id });
+
       result.push(invoice(p.id));
     }
-    return result;
+    return [
+      ...result,
+      pendingAction(
+        "send_invoice",
+        { invoice_ids: result.map((i) => i.id) },
+        session,
+      ),
+    ];
   }
   if (name === "list_invoices") {
     return invoices().filter(
@@ -132,6 +340,21 @@ export async function action(name: string, a: any): Promise<any[]> {
     ];
   }
   if (name === "refund" && a.capture_id) {
+    if (a.invoice_id) validateRefund(resolve(a.invoice_id), a.amount);
+    const capture = object(a.capture_id);
+    const remaining = capture
+      ? Number(capture.amount.value) - Number(capture.refunded || 0)
+      : undefined;
+    if (
+      remaining !== undefined &&
+      (remaining <= 0 ||
+        (a.amount !== undefined &&
+          (!(Number(a.amount) > 0) || Number(a.amount) > remaining)))
+    )
+      throw Error(
+        `Refund exceeds remaining refundable ${remaining.toFixed(2)}`,
+      );
+
     const r = await paypal.refundCapture(
       a.capture_id,
       a.amount
@@ -143,29 +366,58 @@ export async function action(name: string, a: any): Promise<any[]> {
           }
         : {},
     );
+    if (capture)
+      saveObject({
+        ...capture,
+        refunded: Number(capture.refunded || 0) + Number(a.amount || remaining),
+        status:
+          Number(a.amount || remaining) < remaining!
+            ? "PARTIALLY_REFUNDED"
+            : "REFUNDED",
+      });
     event(a.capture_id, "CAPTURE.REFUNDED", r);
+    if (a.invoice_id) {
+      const i = resolve(a.invoice_id);
+      const refunded = Number(i.refunded || 0) + Number(a.amount || remaining);
+      const status = refunded >= (Number(i.paid_amount) || i.amount)
+        ? "REFUNDED" : "PARTIALLY_REFUNDED";
+      db.prepare("UPDATE invoices SET refunded=?,status=? WHERE id=?").run(refunded, status, i.id);
+      if (object(i.id)) saveObject({ ...object(i.id), status });
+      event(i.id, "REFUND", { amount: a.amount, capture_id: a.capture_id });
+      return [{ ...invoice(i.id), remaining_refundable:
+        (Number(i.paid_amount) || i.amount) - refunded }];
+    }
     return [r];
   }
   const i = resolve(a.invoice_id || a.client || "");
   let status = i.status;
-  if (name === "draft_reminder")
+  if (name === "draft_reminder") {
+    const tone = ["friendly", "firm", "final"].includes(a.tone)
+      ? a.tone
+      : "friendly";
+    const days = Math.max(
+      0,
+      Math.floor(
+        (new Date(localDate()).getTime() - new Date(i.due_date).getTime()) /
+          86400000,
+      ),
+    );
+    const subject = `${tone === "final" ? "Final notice" : tone === "firm" ? "Payment overdue" : "Friendly payment reminder"} · ${i.id}`;
+    const body = `${tone === "friendly" ? "Hi" : "Dear"} ${i.client}, your ${i.currency} ${i.amount.toFixed(2)} invoice is ${days} days overdue (due ${i.due_date}). ${tone === "final" ? "Please arrange immediate payment or contact us today to resolve this balance." : tone === "firm" ? "Please pay the outstanding balance promptly and confirm your payment date." : "When you have a moment, please arrange payment. Thank you!"}`;
     return [
-      {
-        kind: "draft",
-        text: `Hi ${i.client}, a friendly reminder that your ${i.currency} ${i.amount.toFixed(2)} invoice is due ${i.due_date}. Thank you!`,
-        invoice_id: i.id,
-        tone: a.tone || "friendly",
-      },
+      { kind: "draft", subject, body, text: body, invoice_id: i.id, tone },
     ];
+  }
   if (name === "send_invoice") {
     if (i.status !== "DRAFT") throw Error("Only draft invoices can be sent");
+    if (!i.email) throw Error("Client email required before sending");
     await paypal.sendInvoice(i.paypal_id);
     status = "SENT";
   } else if (name === "remind_invoice") {
     if (!["SENT", "PARTIALLY_PAID"].includes(i.status))
       throw Error("Send the invoice before reminding");
     await paypal.remindInvoice(i.paypal_id, {
-      subject: "Payment reminder",
+      subject: a.subject || "Payment reminder",
       note: a.message || "A friendly reminder about your invoice.",
       send_to_recipient: true,
     });
@@ -183,26 +435,42 @@ export async function action(name: string, a: any): Promise<any[]> {
         value: Number(a.amount || i.amount).toFixed(2),
       },
     });
+    db.prepare("UPDATE invoices SET paid_amount=? WHERE id=?").run(
+      Number(a.amount || i.amount),
+      i.id,
+    );
     status =
       Number(a.amount || i.amount) < i.amount ? "PARTIALLY_PAID" : "PAID";
   } else if (name === "refund") {
-    if (!["PAID", "PARTIALLY_PAID"].includes(i.status))
+    if (!["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"].includes(i.status))
       throw Error("Only paid invoices can be refunded");
-    if (a.amount && (a.amount <= 0 || a.amount > i.amount))
-      throw Error("Invalid refund amount");
+    const refundAmount = validateRefund(i, a.amount);
     await paypal.recordRefund(i.paypal_id, {
       method: "OTHER",
       refund_date: new Date().toISOString().slice(0, 10),
       amount: {
         currency_code: i.currency,
-        value: Number(a.amount || i.amount).toFixed(2),
+        value: refundAmount.toFixed(2),
       },
     });
-    status = "REFUNDED";
+    const refunded = Number(i.refunded || 0) + refundAmount;
+    db.prepare("UPDATE invoices SET refunded=? WHERE id=?").run(refunded, i.id);
+    status =
+      refunded >= (Number(i.paid_amount) || i.amount)
+        ? "REFUNDED"
+        : "PARTIALLY_REFUNDED";
   } else throw Error("Unknown action");
   db.prepare("UPDATE invoices SET status=? WHERE id=?").run(status, i.id);
+  if (object(i.id)) saveObject({ ...object(i.id), status });
   event(i.id, name.toUpperCase(), { amount: a.amount, message: a.message });
-  return [invoice(i.id)];
+  return [
+    {
+      ...invoice(i.id),
+      remaining_refundable:
+        (Number(invoice(i.id).paid_amount) || i.amount) -
+        Number(invoice(i.id).refunded || 0),
+    },
+  ];
 }
 export function simulated(type: string, id: string, amount?: number) {
   const i = invoice(id);
@@ -256,6 +524,44 @@ export function webhook(e: any) {
         id,
       );
   })();
+  if (status === "PAID") {
+    db.prepare("UPDATE invoices SET paid_amount=amount WHERE id=?").run(id);
+    const i = invoice(id);
+    if (i) {
+      const data = JSON.parse(i.data);
+      const payment = r.payments?.transactions?.find((p: any) => p.capture_id || p.payment_id);
+      const capture_id = r.capture_id || payment?.capture_id ||
+        (e.event_type === "PAYMENT.CAPTURE.COMPLETED" ? r.id : undefined) ||
+        data.capture_id || (mock ? "CAP-" + randomUUID().slice(0, 12) : undefined);
+      const payment_id = payment?.payment_id || r.payment_id || capture_id;
+      if (capture_id && mock && !object(capture_id)) saveObject({
+        id: capture_id, status: "COMPLETED", invoice_id: i.id,
+        amount: { currency_code: i.currency, value: Number(i.amount).toFixed(2) },
+      });
+      db.prepare("UPDATE invoices SET data=? WHERE id=?").run(
+        JSON.stringify({ ...data, ...(capture_id ? { capture_id } : {}),
+          ...(payment_id ? { payment_id } : {}) }), i.id);
+    }
+  }
   if (status && object(id)) saveObject({ ...object(id), status });
   for (const fn of listeners) fn(e);
+}
+
+export function localDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function validateRefund(i: any, amount: any) {
+  if (!["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"].includes(i.status))
+    throw Error("Only paid invoices can be refunded");
+  const remaining =
+    Math.round(
+      ((Number(i.paid_amount) || i.amount) - Number(i.refunded || 0)) * 100,
+    ) / 100;
+  const value = amount === undefined ? remaining : Number(amount);
+  if (!Number.isFinite(value) || value <= 0 || value > remaining)
+    throw Error(
+      `Refund exceeds remaining refundable ${i.currency} ${remaining.toFixed(2)} (or amount is invalid)`,
+    );
+  return value;
 }
