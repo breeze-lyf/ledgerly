@@ -10,11 +10,18 @@
     "dev": "npm run build:web && tsx watch server/index.ts",
     "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
     "build": "npm run build:web && tsc -p tsconfig.server.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "seed": "tsx scripts/seed.ts",
+    "reset": "tsx scripts/reset.ts",
+    "smoke": "bash scripts/smoke.sh",
+    "ui-check": "node scripts/ui-check.mjs",
+    "sandbox:e2e": "node scripts/sandbox-e2e.mjs",
+    "webhook:register": "node scripts/register-webhook.mjs",
+    "webhook:simulate": "node scripts/simulate-webhook.mjs"
   },
   "dependencies": {
     "@paypal/agent-toolkit": "1.11.0",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "react": "^19.0.0",
@@ -27,6 +34,7 @@
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "1.63.0-alpha-2026-08-31",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vite": "^6.2.0"

@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { base, mock } from "../config.js";
+import { base, mock, paypalApiBase } from "../config.js";
 import { db, object, saveObject } from "../db.js";
 type Body = Record<string, any>;
 export interface PayPalClient {
@@ -27,7 +28,7 @@ export class SandboxPayPalClient implements PayPalClient {
   private expires = 0;
   async getAccessToken() {
     if (Date.now() < this.expires) return this.token;
-    const r = await fetch("https://api-m.sandbox.paypal.com/v1/oauth2/token", {
+    const r = await fetch(paypalApiBase + "/v1/oauth2/token", {
       method: "POST",
       headers: {
         Authorization:
@@ -40,13 +41,13 @@ export class SandboxPayPalClient implements PayPalClient {
       body: "grant_type=client_credentials",
     });
     const d = (await r.json()) as any;
-    if (!r.ok) throw Error(JSON.stringify(d));
+    if (!r.ok) throw Error(`PayPal authentication failed (${r.status})`);
     this.token = d.access_token;
     this.expires = Date.now() + (d.expires_in - 60) * 1000;
     return this.token;
   }
   async request(path: string, method = "GET", body?: Body) {
-    const r = await fetch("https://api-m.sandbox.paypal.com" + path, {
+    const r = await fetch(paypalApiBase + path, {
       method,
       headers: {
         Authorization: "Bearer " + (await this.getAccessToken()),
@@ -171,6 +172,7 @@ export class MockPayPalClient implements PayPalClient {
       ...b,
       id,
       status: "DRAFT",
+      amount: { currency_code: b.detail.currency_code, value: b.items.reduce((sum: number, i: any) => sum + Number(i.quantity) * Number(i.unit_amount.value), 0).toFixed(2) },
       links: [
         { rel: "self", href: base + "api/invoices/" + id },
         { rel: "payer-view", href: base + "mock-pay/" + id },
@@ -211,8 +213,11 @@ export class MockPayPalClient implements PayPalClient {
         : "PAID",
     );
   }
-  async recordRefund(id: string, _b: Body) {
-    return this.update(id, "REFUNDED");
+  async recordRefund(id: string, b: Body) {
+    const o = this.get(id);
+    const refunded = Number(o.refunds?.refund_amount?.value || 0) + Number(b.amount.value);
+    return saveObject({ ...o, status: refunded < Number(o.amount.value) ? "PARTIALLY_REFUNDED" : "REFUNDED",
+      refunds: { refund_amount: { ...b.amount, value: refunded.toFixed(2) } } });
   }
   async createOrder(b: Body) {
     const id = "ORDER-" + randomUUID().slice(0, 12);
@@ -228,6 +233,7 @@ export class MockPayPalClient implements PayPalClient {
   }
   async captureOrder(id: string) {
     const o = this.get(id);
+    if (o.status !== "APPROVED") throw Error("ORDER_NOT_APPROVED: Approve the order using its PayPal approval link before capturing payment.");
     const capture = {
       id: "CAP-" + randomUUID().slice(0, 12),
       status: "COMPLETED",
@@ -261,6 +267,20 @@ export class MockPayPalClient implements PayPalClient {
     return { verification_status: "SUCCESS" };
   }
 }
-export const paypal: PayPalClient = mock
+export const directPayPal: PayPalClient = mock
   ? new MockPayPalClient()
   : new SandboxPayPalClient();
+
+type Invocation = (method: keyof PayPalClient, args: any[]) => Promise<any>;
+const execution = new AsyncLocalStorage<Invocation>();
+export function withPayPalExecution<T>(invoke: Invocation, fn: () => Promise<T>) {
+  return execution.run(invoke, fn);
+}
+export const paypal = new Proxy(directPayPal, {
+  get(target, key: keyof PayPalClient) {
+    return (...args: any[]) => {
+      const invoke = execution.getStore();
+      return invoke ? invoke(key, args) : (target[key] as any).apply(target, args);
+    };
+  },
+});

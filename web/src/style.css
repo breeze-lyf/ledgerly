@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
 :root {
   font-family: "DM Sans", sans-serif;
   color: #233241;
@@ -736,4 +735,55 @@ button:disabled {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Keep financial details readable without expanding the viewport. */
+.app { --muted: #596b80; }
+.dark { --muted: #a6b6ca; }
+.message > div { min-width: 0; width: 100%; overflow-wrap: anywhere; }
+.chat-card { min-width: 0; }
+.summary { display: block; overflow-x: auto; }
+.invoice-row > div { min-width: 0; }
+.invoice-row b, .badge, code, .timeline b { overflow-wrap: anywhere; }
+.client-icon { flex-shrink: 0; }
+.dark .bubble { background: #26364a; color: #edf3fc; }
+.dark .user .bubble { background: #0768e8; }
+.mobile-tabs { display: none; }
+@media (max-width: 850px) {
+  .mobile-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .mobile-tabs button { flex: 1; background: #e3ebf5; color: #233241; }
+  .mobile-tabs button[aria-pressed="true"] { background: #0768e8; color: white; }
+  .show-chat .invoices, .show-invoices .chat { display: none; }
+  .workspace { gap: 0; }
+  .panel { min-width: 0; }
+  .chat { height: 620px; }
+  .invoices { height: 620px; max-height: none; }
+  .conversation { padding: 12px; }
+  .header-right { flex-wrap: wrap; justify-content: flex-end; }
+  .mode { padding: 5px; }
+  .stats { padding: 15px; }
+  .stats > div { padding-left: 12px; }
+  .stats strong { font-size: 21px; }
+  .intro h1 { font-size: 23px; }
+  .invoice-row { padding: 14px 10px; gap: 8px; }
+}
+
+@media (min-width: 851px) {
+  header { height: 68px; }
+  main { padding-top: 22px; }
+  .intro { margin-bottom: 20px; }
+  .stats { padding: 18px 26px; margin-bottom: 20px; }
+  .chat, .invoices { height: max(440px, calc(100dvh - 355px)); max-height: none; min-height: 440px; }
+}
+@media (max-width: 850px) {
+  .mobile-tabs { position: sticky; top: 0; z-index: 5; background: inherit; padding: 8px 0; }
+}
+
+.details { padding: 20px; }
+.actions { margin: 16px 0; }
+.timeline > div { padding-bottom: 12px; }
+@media (max-width: 850px) {
+  .mobile-tabs { background: #f6f8fb; }
+  .dark .mobile-tabs { background: #101923; }
+  .chat, .invoices { height: calc(100dvh - 78px); min-height: 440px; }
 }

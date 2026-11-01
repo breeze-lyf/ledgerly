@@ -238,33 +238,7 @@ export async function action(
       );
       if (!Number.isFinite(amount) || amount <= 0)
         throw Error("Invoice amount must be positive");
-      const body = {
-        detail: {
-          currency_code: a.currency || "USD",
-          note: a.note,
-          invoice_date: a.invoice_date || localDate(),
-          payment_term: {
-            term_type: "DUE_ON_DATE",
-            due_date: due.toISOString().slice(0, 10),
-          },
-        },
-        primary_recipients: [
-          {
-            billing_info: {
-              business_name: a.client_name,
-              ...(a.client_email ? { email_address: a.client_email } : {}),
-            },
-          },
-        ],
-        items: a.items.map((i: any) => ({
-          name: i.name,
-          quantity: String(i.quantity),
-          unit_amount: {
-            currency_code: a.currency || "USD",
-            value: Number(i.unit_amount).toFixed(2),
-          },
-        })),
-      };
+      const body = await invoicePayload(a, due.toISOString().slice(0, 10));
       let p = await paypal.createDraftInvoice(body);
       if (!p.id && p.href) p = await paypal.getInvoice(p.href.split("/").pop());
       db.prepare(
@@ -428,7 +402,8 @@ export async function action(
     status = "CANCELLED";
   } else if (name === "record_payment") {
     await paypal.recordPayment(i.paypal_id, {
-      method: "OTHER",
+      method: "CASH",
+      type: "EXTERNAL",
       payment_date: new Date().toISOString().slice(0, 10),
       amount: {
         currency_code: i.currency,
@@ -436,7 +411,7 @@ export async function action(
       },
     });
     db.prepare("UPDATE invoices SET paid_amount=? WHERE id=?").run(
-      Number(a.amount || i.amount),
+      Number(i.paid_amount || 0) + Number(a.amount || i.amount),
       i.id,
     );
     status =
@@ -446,7 +421,8 @@ export async function action(
       throw Error("Only paid invoices can be refunded");
     const refundAmount = validateRefund(i, a.amount);
     await paypal.recordRefund(i.paypal_id, {
-      method: "OTHER",
+      method: "CASH",
+      type: "EXTERNAL",
       refund_date: new Date().toISOString().slice(0, 10),
       amount: {
         currency_code: i.currency,
@@ -461,7 +437,12 @@ export async function action(
         : "PARTIALLY_REFUNDED";
   } else throw Error("Unknown action");
   db.prepare("UPDATE invoices SET status=? WHERE id=?").run(status, i.id);
-  if (object(i.id)) saveObject({ ...object(i.id), status });
+  if (!mock) {
+    const remote = await paypal.getInvoice(i.paypal_id);
+    status = remote.status;
+    db.prepare("UPDATE invoices SET status=?,data=? WHERE id=?").run(status, JSON.stringify(remote), i.id);
+    saveObject(remote);
+  } else if (object(i.id)) saveObject({ ...object(i.id), status });
   event(i.id, name.toUpperCase(), { amount: a.amount, message: a.message });
   return [
     {
@@ -502,7 +483,7 @@ export function webhook(e: any) {
   if (!e.id || !e.event_type || !e.resource) throw Error("Invalid webhook");
   if (db.prepare("SELECT id FROM events WHERE id=?").get(e.id)) return;
   const r = e.resource;
-  let id = r.invoice_id || r.id;
+  let id = r.invoice?.id || r.invoice_id || r.id;
   const related = r.supplementary_data?.related_ids;
   if (!invoice(id) && related?.order_id) id = related.order_id;
   const statuses: Record<string, string> = {
@@ -564,4 +545,25 @@ function validateRefund(i: any, amount: any) {
       `Refund exceeds remaining refundable ${i.currency} ${remaining.toFixed(2)} (or amount is invalid)`,
     );
   return value;
+}
+
+export async function invoicePayload(a: any, dueDate: string) {
+  const currency = a.currency || "USD";
+  const generated = await paypal.generateInvoiceNumber();
+  return {
+    detail: {
+      invoice_number: generated.invoice_number,
+      currency_code: currency,
+      invoice_date: a.invoice_date || localDate(),
+      ...(a.note ? { note: a.note } : {}),
+      payment_term: { term_type: "DUE_ON_DATE_SPECIFIED", due_date: dueDate },
+    },
+    invoicer: { email_address: process.env.PAYPAL_SANDBOX_BUSINESS_EMAIL || (mock ? "merchant@example.com" : undefined) },
+    primary_recipients: [{ billing_info: {
+      business_name: a.client_name,
+      ...(a.client_email ? { email_address: a.client_email } : {}),
+    } }],
+    items: a.items.map((i: any) => ({ name: i.name, quantity: String(i.quantity),
+      unit_amount: { currency_code: currency, value: Number(i.unit_amount).toFixed(2) } })),
+  };
 }

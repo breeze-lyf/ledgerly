@@ -35,6 +35,7 @@ type Invoice = {
   due_date: string;
   created_at: string;
   paid_at?: string;
+  paid_amount?: number;
   data: string;
   timeline?: any[];
 };
@@ -48,7 +49,14 @@ function App() {
   const [busy, B] = useState(false);
   const [error, E] = useState("");
   const [mode, Mode] = useState("fallback");
+  const [panel, Panel] = useState("chat");
+  const [completed, Completed] = useState<string[]>([]);
   const [dark, D] = useState(false);
+  function switchPanel(next: string) {
+    Panel(next);
+    if (window.matchMedia("(max-width: 850px)").matches)
+      requestAnimationFrame(() => document.querySelector(".mobile-tabs")?.scrollIntoView({ block: "start" }));
+  }
   async function refresh() {
     const r = await api("invoices");
     R(r);
@@ -71,13 +79,13 @@ function App() {
   useEffect(() => {
     if (selected)
       api("invoices/" + selected.id)
-        .then(S)
+        .then((i) => { S(i); switchPanel("invoices"); })
         .catch((e) => E(e.message));
   }, [rows]);
   useEffect(() => {
     document
       .querySelector(".conversation")
-      ?.scrollTo({ top: 999999, behavior: "smooth" });
+      ?.scrollTo({ top: 999999, behavior: "instant" });
   }, [messages, busy]);
   async function send(text = input) {
     if (!text.trim() || busy) return;
@@ -111,6 +119,8 @@ function App() {
     E("");
     try {
       if (name === "remind") {
+        B(false);
+        switchPanel("chat");
         await send("Draft a friendly reminder for " + selected.id);
         return;
       }
@@ -120,6 +130,7 @@ function App() {
           resource_id: selected.id,
         });
       else {
+        switchPanel("chat");
         const cards = await api("invoices/" + selected.id + "/" + name, {});
         M((m) => [
           ...m,
@@ -138,6 +149,8 @@ function App() {
     E("");
     try {
       const d = await api(path, body);
+      Mode(d.mode || "system");
+      Completed((ids) => [...ids, path.split("/")[1]]);
       M((m) => [
         ...m,
         {
@@ -155,7 +168,7 @@ function App() {
   }
   const mockId = location.pathname.match(/\/mock-pay\/([^/]+)/)?.[1];
   const [paid, P] = useState(false);
-  if (mockId)
+  if (mockId && health.paypalMode === "mock")
     return (
       <div className="checkout">
         <div className="brand">
@@ -187,11 +200,11 @@ function App() {
       </div>
     );
   const outstanding = rows.filter((i) =>
-    ["DRAFT", "SENT", "PARTIALLY_PAID"].includes(i.status),
+    ["SENT", "PARTIALLY_PAID"].includes(i.status),
   );
   const paidRows = rows.filter(
     (i) =>
-      i.status === "PAID" &&
+      ["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(i.status) &&
       i.paid_at?.slice(0, 7) === new Date().toISOString().slice(0, 7),
   );
   return (
@@ -207,7 +220,7 @@ function App() {
           </span>
           <span className="mode">
             ✦ AI:{" "}
-            {mode === "llm" ? "LLM" : health.llm ? "LLM ready" : "fallback"}
+            {mode === "system" ? "System" : mode === "llm" ? "LLM" : health.llm ? "LLM ready" : "fallback"}
           </span>
           <button
             className="icon"
@@ -237,7 +250,7 @@ function App() {
               {money(
                 outstanding
                   .filter((i) => i.currency === "USD")
-                  .reduce((s, i) => s + i.amount, 0),
+                  .reduce((s, i) => s + i.amount - Number(i.paid_amount || 0), 0),
               )}
             </strong>
             <small>
@@ -245,12 +258,12 @@ function App() {
             </small>
           </div>
           <div>
-            <span>Paid this month · USD</span>
+            <span>Received this month · USD</span>
             <strong>
               {money(
                 paidRows
                   .filter((i) => i.currency === "USD")
-                  .reduce((s, i) => s + i.amount, 0),
+                  .reduce((s, i) => s + Number(i.paid_amount || i.amount), 0),
               )}
               <em>↗</em>
             </strong>
@@ -268,7 +281,11 @@ function App() {
             </div>
           </div>
         </section>
-        <div className="workspace">
+        <nav className="mobile-tabs" aria-label="Workspace panels">
+          <button aria-pressed={panel === "chat"} onClick={() => switchPanel("chat")}>Chat</button>
+          <button aria-pressed={panel === "invoices"} onClick={() => switchPanel("invoices")}>Invoices</button>
+        </nav>
+        <div className={"workspace show-" + panel}>
           <section className="chat panel">
             <div className="panel-heading">
               <div>
@@ -317,15 +334,15 @@ function App() {
                               : `Send ${c.args.invoice_ids?.length || 1} draft invoice(s)`}
                           </p>
                           <button
-                            disabled={busy}
+                            disabled={busy || completed.includes(c.id)}
                             onClick={() =>
                               cardAction(`actions/${c.id}/confirm`)
                             }
                           >
-                            Confirm
+                            {completed.includes(c.id) ? "Completed" : "Confirm"}
                           </button>{" "}
                           <button
-                            disabled={busy}
+                            disabled={busy || completed.includes(c.id)}
                             className="secondary"
                             onClick={() => cardAction(`actions/${c.id}/cancel`)}
                           >
@@ -397,7 +414,7 @@ function App() {
                           key={j}
                           onClick={() =>
                             api("invoices/" + c.id)
-                              .then(S)
+                              .then((i) => { S(i); switchPanel("invoices"); })
                               .catch((e) => E(e.message))
                           }
                         >
@@ -425,7 +442,7 @@ function App() {
             <div className="composer">
               <div className="chips">
                 {[
-                  "Invoice Acme $800/month maintenance for 3 months",
+                  "Invoice Acme billing@acme.example $800/month maintenance for 3 months",
                   "Who hasn't paid this month?",
                   "Send a reminder to Acme",
                   "Refund $200 to Acme",
@@ -509,6 +526,9 @@ function App() {
                       <button disabled={busy} onClick={() => act("remind")}>
                         Send reminder
                       </button>
+                      <button disabled={busy} onClick={() => act("record-payment")}>
+                        Record payment
+                      </button>
                       {health.paypalMode === "mock" && (
                         <button disabled={busy} onClick={() => act("paid")}>
                           Simulate paid
@@ -516,7 +536,7 @@ function App() {
                       )}
                     </>
                   )}
-                  {["PAID", "PARTIALLY_PAID"].includes(selected.status) && (
+                  {["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"].includes(selected.status) && (
                     <button disabled={busy} onClick={() => act("refund")}>
                       Review full refund
                     </button>
@@ -579,7 +599,7 @@ function App() {
                       key={i.id}
                       onClick={() =>
                         api("invoices/" + i.id)
-                          .then(S)
+                          .then((i) => { S(i); switchPanel("invoices"); })
                           .catch((e) => E(e.message))
                       }
                     >

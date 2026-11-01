@@ -14,6 +14,10 @@ import {
 } from "./service.js";
 import { toolkitHealth, execute } from "./agent/toolkit.js";
 import { chat } from "./agent/index.js";
+if (mock && process.env.SEED_ON_START === "1") {
+  const { seed } = await import("./seed.js");
+  await seed();
+}
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 const api = express.Router();
@@ -57,6 +61,7 @@ api.post(
     if (!["confirm", "cancel"].includes(req.params.operation))
       throw Error("Invalid action");
     res.json({
+      mode: "system",
       cards: await confirmAction(
         req.params.id,
         req.body.session_id || "default",
@@ -73,12 +78,12 @@ api.get("/invoices/:id", (req, res) => {
     ...i,
     timeline: db
       .prepare(
-        "SELECT * FROM events WHERE invoice_id=? ORDER BY created_at,rowid",
+        "SELECT * FROM events WHERE invoice_id=? ORDER BY datetime(created_at),rowid",
       )
       .all(i.id),
   });
 });
-for (const name of ["send", "remind", "cancel", "refund"])
+for (const name of ["send", "remind", "cancel", "refund", "record-payment"])
   api.post(
     "/invoices/:id/" + name,
     wrap(async (req: any, res: any) =>
@@ -87,6 +92,7 @@ for (const name of ["send", "remind", "cancel", "refund"])
           (
             {
               send: "send_invoice",
+              "record-payment": "record_payment_for_invoice",
               remind: "send_invoice_reminder",
               cancel: "cancel_sent_invoice",
               refund: "record_refund_for_invoice",
@@ -103,17 +109,24 @@ for (const name of ["send", "remind", "cancel", "refund"])
   );
 async function handleWebhook(req: any, res: any) {
   if (!mock) {
-    const verification = await paypal.verifyWebhookSignature({
-      auth_algo: req.headers["paypal-auth-algo"],
-      cert_url: req.headers["paypal-cert-url"],
-      transmission_id: req.headers["paypal-transmission-id"],
-      transmission_sig: req.headers["paypal-transmission-sig"],
-      transmission_time: req.headers["paypal-transmission-time"],
-      webhook_id: process.env.PAYPAL_WEBHOOK_ID,
-      webhook_event: req.body,
-    });
-    if (verification.verification_status !== "SUCCESS")
-      return res.status(401).json({ error: "Invalid webhook signature" });
+    let verified = false;
+    const headerNames = ["paypal-auth-algo", "paypal-cert-url", "paypal-transmission-id", "paypal-transmission-sig", "paypal-transmission-time"];
+    if (process.env.PAYPAL_WEBHOOK_ID && headerNames.every((h) => req.headers[h])) {
+      try {
+        const verification = await paypal.verifyWebhookSignature({
+          auth_algo: req.headers["paypal-auth-algo"],
+          cert_url: req.headers["paypal-cert-url"],
+          transmission_id: req.headers["paypal-transmission-id"],
+          transmission_sig: req.headers["paypal-transmission-sig"],
+          transmission_time: req.headers["paypal-transmission-time"],
+          webhook_id: process.env.PAYPAL_WEBHOOK_ID,
+          webhook_event: req.body,
+        });
+        verified = verification.verification_status === "SUCCESS";
+      } catch { /* Invalid verification requests fail closed. */ }
+    }
+    console.log("PayPal webhook verification:", verified ? "SUCCESS" : "FAILURE");
+    if (!verified) return res.status(401).json({ error: "Invalid webhook signature" });
   }
   webhook(req.body);
   res.json({ ok: true });
@@ -154,6 +167,7 @@ api.get("/stream", (req, res) => {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
   });
   res.flushHeaders();
   res.write(": connected\n\n");
@@ -196,7 +210,8 @@ api.post(
 );
 app.use(base + "api", api);
 app.use(base, express.static(pathResolve("web/dist"), { index: false }));
-app.get(base + "*", (_req, res) => {
+app.get(base + "*", (req, res) => {
+  if (!mock && req.path.startsWith(base + "mock-pay/")) return res.sendStatus(404);
   const html = readFileSync("web/dist/index.html", "utf8").replace(
     "<head>",
     "<head><script>window.__BASE_PATH__=" + JSON.stringify(base) + ";</script>",

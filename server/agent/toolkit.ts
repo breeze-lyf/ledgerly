@@ -3,9 +3,9 @@ import {
   ALL_TOOLS_ENABLED,
 } from "@paypal/agent-toolkit/openai";
 import { mock } from "../config.js";
-import { action, pendingAction, event, localDate } from "../service.js";
-import { paypal } from "../paypal/index.js";
-import { db, invoice, object, saveObject } from "../db.js";
+import { action, pendingAction, event } from "../service.js";
+import { paypal, directPayPal, withPayPalExecution, type PayPalClient } from "../paypal/index.js";
+import { db } from "../db.js";
 const actions = Object.fromEntries(
   ["invoices", "orders", "payments", "refunds"].map((k) => [
     k,
@@ -42,7 +42,7 @@ export const toolkitHealth = {
     ? "mock"
     : process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit"
       ? "toolkit"
-      : "sandbox",
+      : "ours",
 };
 export async function execute(
   name: string,
@@ -50,7 +50,7 @@ export async function execute(
   session = "default",
   confirmed = false,
 ): Promise<any[]> {
-  const result = await executeTool(name, a, session, confirmed);
+  const result = await withPayPalExecution(invokePayPal, () => executeTool(name, a, session, confirmed));
   if (["create_invoice", "create_invoice_series"].includes(name)) {
     const drafts = result.filter((card) => card.status === "DRAFT");
     if (drafts.length && !result.some((card) => card.kind === "pending_action"))
@@ -66,7 +66,7 @@ async function executeTool(
   if (name === "refund_invoice") return action(name, a, false, session);
   if (name === "refund" && a.invoice_id && a.capture_id)
     return action(name, a, confirmed, session);
-  let originalArgs = structuredClone(a);
+  
   if (name === "create_invoice") {
     const b = a.primary_recipients?.[0]?.billing_info;
     a = {
@@ -129,167 +129,16 @@ async function executeTool(
   // A tool request can only propose a send/refund. Confirmation comes from the user endpoint.
   if (["send_invoice", "refund"].includes(mapped) && !confirmed)
     return action(mapped, a, false, session);
-  const toolkitName =
-    name === "refund"
-      ? a.capture_id
-        ? "create_refund"
-        : "record_refund_for_invoice"
-      : name;
-  if (
-    !mock &&
-    process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" &&
-    names.includes(toolkitName)
-  ) {
-    if (name === "create_invoice" && !originalArgs.primary_recipients)
-      originalArgs = {
-        currency_code: a.currency || "USD",
-        invoice_date: localDate(),
-        primary_recipients: [
-          {
-            billing_info: {
-              business_name: a.client_name,
-              ...(a.client_email ? { email_address: a.client_email } : {}),
-            },
-          },
-        ],
-        items: a.items.map((i: any) => ({
-          ...i,
-          quantity: String(i.quantity),
-          unit_amount: {
-            currency_code: a.currency || "USD",
-            value: Number(i.unit_amount).toFixed(2),
-          },
-        })),
-        note: a.note,
-      };
-    if (toolkitName === "record_refund_for_invoice") {
-      originalArgs.method = originalArgs.method || "OTHER";
-      originalArgs.refund_date = originalArgs.refund_date || localDate();
-      if (!originalArgs.amount) {
-        const i = invoice(a.invoice_id);
-        originalArgs.amount = {
-          currency_code: i.currency,
-          value: (
-            (Number(i.paid_amount) || i.amount) - Number(i.refunded || 0)
-          ).toFixed(2),
-        };
-      }
-    }
-    if (name === "refund" && typeof originalArgs.amount === "number")
-      originalArgs.amount = {
-        value: originalArgs.amount.toFixed(2),
-        currency_code: a.currency || invoice(a.invoice_id)?.currency || "USD",
-      };
-    const r = await toolkit.handleToolCall({
-      id: "ledgerly",
-      type: "function",
-      function: { name: toolkitName, arguments: JSON.stringify(originalArgs) },
-    });
-    let value: any;
-    try {
-      value = JSON.parse(String(r.content));
-    } catch {
-      value = { text: r.content };
-    }
-    if (value?.error || (value?.code && value?.message))
-      throw Error(JSON.stringify(value.error || value));
-    if (name === "create_invoice") {
-      const p = value.id
-        ? value
-        : await paypal.getInvoice(value.href?.split("/").pop());
-      const amount = a.items.reduce(
-        (s: number, i: any) => s + Number(i.quantity) * Number(i.unit_amount),
-        0,
-      );
-      db.prepare(
-        "INSERT INTO invoices(id,paypal_id,client,email,amount,currency,status,due_date,data) VALUES (?,?,?,?,?,?,?,?,?)",
-      ).run(
-        p.id,
-        p.id,
-        a.client_name,
-        a.client_email || null,
-        amount,
-        a.currency || "USD",
-        "DRAFT",
-        p.detail?.payment_term?.due_date ||
-          new Date().toISOString().slice(0, 10),
-        JSON.stringify(p),
-      );
-      event(p.id, "INVOICE.CREATED", { executor: "toolkit" });
-      return [
-        invoice(p.id),
-        pendingAction("send_invoice", { invoice_id: p.id }, session),
-      ];
-    }
-    if (name === "send_invoice") {
-      event(a.invoice_id, "SEND_INVOICE", { executor: "toolkit" });
-      db.prepare("UPDATE invoices SET status='SENT' WHERE id=?").run(
-        a.invoice_id,
-      );
-      return [invoice(a.invoice_id)];
-    }
-    if (toolkitName === "record_refund_for_invoice") {
-      const i = invoice(a.invoice_id);
-      const refunded =
-        Number(i.refunded || 0) +
-        Number(
-          a.amount ||
-            (Number(i.paid_amount) || i.amount) - Number(i.refunded || 0),
-        );
-      db.prepare("UPDATE invoices SET refunded=?,status=? WHERE id=?").run(
-        refunded,
-        refunded >= (Number(i.paid_amount) || i.amount)
-          ? "REFUNDED"
-          : "PARTIALLY_REFUNDED",
-        i.id,
-      );
-      event(i.id, "REFUND", { amount: a.amount, executor: "toolkit" });
-      return [
-        {
-          ...invoice(i.id),
-          remaining_refundable: (Number(i.paid_amount) || i.amount) - refunded,
-        },
-      ];
-    }
-    if (toolkitName === "create_refund" && a.capture_id) {
-      const capture = object(a.capture_id);
-      if (capture) {
-        const refunded =
-          Number(capture.refunded || 0) +
-          Number(
-            a.amount ||
-              Number(capture.amount.value) - Number(capture.refunded || 0),
-          );
-        saveObject({
-          ...capture,
-          refunded,
-          status:
-            refunded >= Number(capture.amount.value)
-              ? "REFUNDED"
-              : "PARTIALLY_REFUNDED",
-        });
-      }
-      event(a.capture_id, "CAPTURE.REFUNDED", value);
-    }
-    if (name === "cancel_sent_invoice")
-      db.prepare("UPDATE invoices SET status='CANCELLED' WHERE id=?").run(
-        a.invoice_id,
-      );
-    if (name === "record_payment_for_invoice") {
-      const i = invoice(a.invoice_id);
-      const paid = Number(i.paid_amount || 0) + Number(a.amount || i.amount);
-      db.prepare("UPDATE invoices SET paid_amount=?,status=? WHERE id=?").run(
-        paid,
-        paid >= i.amount ? "PAID" : "PARTIALLY_PAID",
-        i.id,
-      );
-      event(i.id, "RECORD_PAYMENT", { amount: a.amount });
-    }
-    return [value];
-  }
   if (name === "get_invoice") return [await paypal.getInvoice(a.invoice_id)];
-  if (name === "get_order") return [await paypal.getOrder(a.id)];
-  if (name === "pay_order") return [await paypal.captureOrder(a.id)];
+  if (name === "get_order") return [await paypal.getOrder(a.id || a.order_id)];
+  if (name === "pay_order") {
+    try { return [await paypal.captureOrder(a.id || a.order_id)]; }
+    catch (e) {
+      if (/ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test((e as Error).message))
+        return [{ kind: "notice", code: "ORDER_NOT_APPROVED", message: "Approve the order using its PayPal approval link before capturing payment." }];
+      throw e;
+    }
+  }
   if (name === "get_refund") return [await paypal.getRefund(a.refund_id)];
   if (name === "create_order")
     return action(
@@ -308,11 +157,80 @@ async function executeTool(
   return action(mapped, a, confirmed, session);
 }
 export function trace(tool: string) {
-  if (tool === "refund") tool = "record_refund_for_invoice";
-  const official = paypalTools.some((t: any) => t.function.name === tool);
-  return {
-    tool,
-    source: official ? "paypal-agent-toolkit" : "ledgerly",
-    executor: official ? toolkitHealth.execution : mock ? "mock" : "sandbox",
+  const methods: Record<string, keyof PayPalClient> = {
+    create_invoice: "createDraftInvoice", create_invoice_series: "createDraftInvoice",
+    send_invoice: "sendInvoice", send_invoice_reminder: "remindInvoice", remind_invoice: "remindInvoice",
+    cancel_sent_invoice: "cancelInvoice", record_payment_for_invoice: "recordPayment", record_payment: "recordPayment",
+    refund: "recordRefund", refund_invoice: "recordRefund", record_refund_for_invoice: "recordRefund",
+    create_order: "createOrder", get_order: "getOrder", pay_order: "captureOrder", get_invoice: "getInvoice",
   };
+  const official = methods[tool] && toolForMethod[methods[tool]];
+  return { tool, source: official ? "paypal-agent-toolkit" : "ledgerly",
+    executor: mock ? "mock" : process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" && official &&
+      paypalTools.some((t: any) => t.function.name === official) ? "toolkit" : "ours" };
+}
+
+const toolForMethod: Partial<Record<keyof PayPalClient, string>> = {
+  createDraftInvoice: "create_invoice", sendInvoice: "send_invoice",
+  remindInvoice: "send_invoice_reminder", cancelInvoice: "cancel_sent_invoice",
+  recordPayment: "record_payment_for_invoice", recordRefund: "record_refund_for_invoice",
+  createOrder: "create_order", getOrder: "get_order", captureOrder: "pay_order",
+  getInvoice: "get_invoice", listInvoices: "list_invoices", refundCapture: "create_refund", getRefund: "get_refund",
+};
+async function invokePayPal(method: keyof PayPalClient, args: any[]) {
+  const name = toolForMethod[method];
+  const enabled = !mock && process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" && name &&
+    paypalTools.some((t: any) => t.function.name === name);
+  if (!enabled) {
+    const value = await (directPayPal[method] as any).apply(directPayPal, args);
+    if (method !== "getAccessToken") event(typeof args[0] === "string" ? args[0] : value?.id || "paypal", "PAYPAL.EXECUTED", {
+      operation: method, executor: mock ? "mock" : "ours",
+      ...(!mock && process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" ? { fallback: "tool unavailable in toolkit" } : {}),
+    });
+    return value;
+  }
+  const a = toolkitArguments(method, args);
+  let result;
+  try {
+    result = await toolkit.handleToolCall({ id: "ledgerly", type: "function",
+      function: { name: name!, arguments: JSON.stringify(a) } });
+  } catch (e) {
+    // SDK errors can contain HTTP configuration. Never expose or log those objects.
+    if (/ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test(String((e as Error).message)))
+      throw Error("ORDER_NOT_APPROVED: Order needs payer approval");
+    throw Error(`PayPal toolkit ${name} failed`);
+  }
+  let value: any = result.content;
+  if (Array.isArray(value)) value = value.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { throw Error("PayPal toolkit returned an invalid response"); }
+  }
+  if (value?.error || value?.name === "INVALID_REQUEST" || value?.name === "UNPROCESSABLE_ENTITY" || value?.error_details)
+    throw Error("PayPal toolkit request failed: " +
+      (value?.details?.map((d: any) => d.issue).filter(Boolean).join(", ") || value?.name || "request rejected"));
+  event(args[0]?.id || (typeof args[0] === "string" ? args[0] : "toolkit"), "PAYPAL.EXECUTED", { tool: name, executor: "toolkit" });
+  // Toolkit mutation responses may be empty; always fetch canonical state with our client.
+  if (method === "createDraftInvoice") {
+    const id = value?.id || value?.href?.split("/").pop();
+    if (!id) throw Error("PayPal toolkit did not return an invoice id");
+    return directPayPal.getInvoice(id);
+  }
+  if (["sendInvoice", "remindInvoice", "cancelInvoice", "recordPayment", "recordRefund"].includes(method))
+    return directPayPal.getInvoice(args[0]);
+  return value;
+}
+function toolkitArguments(method: keyof PayPalClient, args: any[]): any {
+  if (method === "createDraftInvoice") {
+    const b = args[0];
+    return { ...b.detail, invoicer: b.invoicer, primary_recipients: b.primary_recipients, items: b.items };
+  }
+  if (method === "createOrder") {
+    const b = args[0], unit = b.purchase_units[0];
+    return { currencyCode: unit.amount.currency_code, intent: b.intent,
+      items: [{ name: unit.description || "Payment", itemCost: Number(unit.amount.value), itemTotal: Number(unit.amount.value), quantity: 1 }] };
+  }
+  if (["getOrder", "captureOrder"].includes(method)) return { id: args[0] };
+  if (method === "getRefund") return { refund_id: args[0] };
+  if (method === "refundCapture") return { capture_id: args[0], ...args[1] };
+  return { invoice_id: args[0], ...(args[1] || {}) };
 }

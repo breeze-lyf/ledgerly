@@ -93,6 +93,12 @@ function parse(s: string): [string, any] {
       },
     ];
   }
+  const orderId = s.match(/(?:get|capture) order\s+(\S+)/i);
+  if (orderId) return [/^capture/i.test(s) ? "pay_order" : "get_order", { id: orderId[1] }];
+  const payment = s.match(/record payment(?: of)?\s+\$([\d,.]+)\s+(?:for|to)\s+(\S+)/i);
+  if (payment) return ["record_payment_for_invoice", { invoice_id: payment[2], amount: Number(payment[1].replaceAll(",", "")) }];
+  const reminder = s.match(/^send reminder (?:for|to)\s+(\S+)/i);
+  if (reminder) return ["send_invoice_reminder", { invoice_id: reminder[1] }];
   if (/list|show.*invoices/i.test(s)) return ["list_invoices", {}];
   if (/payment link/i.test(s))
     return [
@@ -200,9 +206,11 @@ export async function chat(message: string, session = "default") {
     const confirms = /^(?:yes(?: please)?(?: send(?: it)?)?|go ahead(?: and send(?: it)?)?|ok(?:ay)?(?: please)?(?: send(?: it)?)?|confirm|sure(?: please)?|(?:please )?send(?: it)?(?: please)?)$/;
     const cancels = /^(?:no(?: thanks| please)?|don'?t send(?: it)?|do not send(?: it)?|cancel(?: it)?)(?: please)?$/;
     if (latest && confirms.test(decision)) {
+      mode = "system";
       cards = await confirmAction(latest.id, session);
       traces.push(trace(latest.name));
     } else if (latest && cancels.test(decision)) {
+      mode = "system";
       cards = await confirmAction(latest.id, session, true);
       reply = "Action cancelled.";
     } else if (pending?.missing) {
