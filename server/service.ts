@@ -439,7 +439,11 @@ export async function action(
   db.prepare("UPDATE invoices SET status=? WHERE id=?").run(status, i.id);
   if (!mock) {
     const remote = await paypal.getInvoice(i.paypal_id);
-    status = remote.status;
+    const map: Record<string, string> = { MARKED_AS_PAID: "PAID", MARKED_AS_REFUNDED: "REFUNDED" };
+    const remoteStatus = map[remote.status] || remote.status;
+    // Keep locally derived refund states; PayPal may still report the invoice as paid.
+    if (!(["PARTIALLY_REFUNDED", "REFUNDED"].includes(status) && ["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(remoteStatus)))
+      status = remoteStatus;
     db.prepare("UPDATE invoices SET status=?,data=? WHERE id=?").run(status, JSON.stringify(remote), i.id);
     saveObject(remote);
   } else if (object(i.id)) saveObject({ ...object(i.id), status });
