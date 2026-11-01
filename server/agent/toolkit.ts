@@ -134,7 +134,8 @@ async function executeTool(
   if (name === "pay_order") {
     try { return [await paypal.captureOrder(a.id || a.order_id)]; }
     catch (e) {
-      if (/ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test((e as Error).message))
+      const status = await paypal.getOrder(a.id || a.order_id).then((o: any) => o.status).catch(() => "");
+      if (/ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test((e as Error).message) || ["CREATED", "PAYER_ACTION_REQUIRED"].includes(status))
         return [{ kind: "notice", code: "ORDER_NOT_APPROVED", message: "Approve the order using its PayPal approval link before capturing payment." }];
       throw e;
     }
@@ -205,7 +206,7 @@ async function invokePayPal(method: keyof PayPalClient, args: any[]) {
   if (typeof value === "string") {
     try { value = JSON.parse(value); } catch { throw Error("PayPal toolkit returned an invalid response"); }
   }
-  if (value?.error || value?.name === "INVALID_REQUEST" || value?.name === "UNPROCESSABLE_ENTITY" || value?.error_details)
+  if (value?.error || value?.name === "INVALID_REQUEST" || value?.name === "UNPROCESSABLE_ENTITY" || /ERROR$/.test(String(value?.name || value?.code || "")) || value?.error_details)
     throw Error("PayPal toolkit request failed: " +
       (value?.details?.map((d: any) => d.issue).filter(Boolean).join(", ") || value?.name || "request rejected"));
   event(args[0]?.id || (typeof args[0] === "string" ? args[0] : "toolkit"), "PAYPAL.EXECUTED", { tool: name, executor: "toolkit" });
@@ -217,6 +218,10 @@ async function invokePayPal(method: keyof PayPalClient, args: any[]) {
   }
   if (["sendInvoice", "remindInvoice", "cancelInvoice", "recordPayment", "recordRefund"].includes(method))
     return directPayPal.getInvoice(args[0]);
+  if (method === "createOrder") {
+    if (!value?.id) throw Error("PayPal toolkit did not return an order id");
+    return directPayPal.getOrder(value.id);
+  }
   return value;
 }
 function toolkitArguments(method: keyof PayPalClient, args: any[]): any {

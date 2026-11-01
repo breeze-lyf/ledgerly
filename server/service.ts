@@ -309,7 +309,7 @@ export async function action(
       {
         ...o,
         kind: "payment_link",
-        approve_url: o.links?.find((l: any) => l.rel === "approve")?.href,
+        approve_url: o.links?.find((l: any) => ["approve", "payer-action"].includes(l.rel))?.href,
       },
     ];
   }
