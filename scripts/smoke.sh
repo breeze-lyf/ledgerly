@@ -32,6 +32,28 @@ const email=await chat('clarify@example.com');assert.ok(email.cards.some(c=>c.ki
 const yes=await chat('yes, send it');assert.equal(yes.mode,'system');assert.ok(yes.cards.some(c=>c.status==='SENT'));
 for(const tone of ['friendly','firm','final']){const d=await chat(`Draft a ${tone} reminder for ${drafts[1].id}`);assert.equal(d.cards[0].tone,tone);assert.ok(d.cards[0].subject&&d.cards[0].body.includes('days overdue'));}
 await chat("Invoice CancelTest cancel@example.com $50");const cancelled=await chat("no thanks");assert.equal(cancelled.mode,"system");assert.equal(cancelled.reply,"Action cancelled.");
+const link = await chat('Create payment link $25 for Logo revision');
+const order = link.cards.find(c => c.kind === 'payment_link'); assert.ok(order?.approve_url);
+let stored = (await request('orders')).find(o => o.id === order.id); assert.equal(stored.status, 'CREATED');
+await request('mock-pay/'+order.id, {});
+stored = (await request('orders')).find(o => o.id === order.id);
+assert.equal(stored.status, 'COMPLETED'); assert.ok(stored.capture_id); assert.equal(stored.payment.status, 'PAID');
+assert.ok(stored.timeline.some(e => e.event_type === 'CHECKOUT.ORDER.APPROVED'));
+assert.ok(stored.timeline.some(e => e.event_type === 'PAYMENT.CAPTURE.COMPLETED'));
+const approved = { id: 'duplicate-approved-'+order.id, event_type: 'CHECKOUT.ORDER.APPROVED', resource: { id: order.id } };
+await Promise.all([request('webhooks/paypal', approved), request('webhooks/paypal', approved)]);
+assert.equal((await request('orders')).find(o => o.id === order.id).capture_id, stored.capture_id);
+const partial = await chat(`refund $5 on order ${order.id}`);
+const proposal = partial.cards.find(c => c.kind === 'pending_action'); assert.ok(proposal); assert.equal(proposal.args.capture_id, stored.capture_id);
+assert.equal((await request('orders')).find(o => o.id === order.id).refunded, 0);
+await request(`actions/${proposal.id}/confirm`, {});
+stored = (await request('orders')).find(o => o.id === order.id);
+assert.equal(stored.refunded, 5); assert.equal(stored.status, 'COMPLETED'); assert.equal(stored.payment.status, 'PARTIALLY_REFUNDED');
+const over = await chat(`refund $21 on order ${order.id}`); assert.equal(over.cards.length, 0); assert.match(over.reply, /remaining refundable/);
+const button = await request(`orders/${order.id}/refund`, { amount: 20 }); assert.equal(button[0].kind, 'pending_action');
+await request(`actions/${button[0].id}/confirm`, {});
+assert.equal((await request('orders')).find(o => o.id === order.id).status, 'REFUNDED');
+console.log('PASS: payment link → approved webhook → idempotent auto-capture → paid payment → confirmed partial refund → button refund → fully refunded');
 const history=await request('messages?session_id='+session_id);assert.ok(history.some(m=>m.traces?.length));
 console.log('PASS: toolkit health → draft series → confirm send → payment → reconciliation → partial refund → over-refund rejected → clarification → confirmed send → reminder tones → persisted history');
 JS

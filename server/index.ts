@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { base, mock, llmConfigured } from "./config.js";
-import { db, invoice, invoices, object, saveObject } from "./db.js";
+import { db, invoice, invoices, object, saveObject, orders } from "./db.js";
 import { paypal } from "./paypal/index.js";
 import {
   action,
@@ -114,6 +114,8 @@ api.post("/invoices/:id/delete", wrap(async (req: any, res: any) => {
   purgeLocal([row.id]);
   res.json({ ok: true });
 }));
+api.get("/orders", (_req, res) => res.json(orders()));
+api.post("/orders/:id/refund", wrap(async (req: any, res: any) => res.json(await action("refund_order", { ...req.body, order_id: req.params.id }, false, req.body.session_id || "default"))));
 api.get("/invoices", (_req, res) => res.json(invoices()));
 api.get("/invoices/:id", (req, res) => {
   const i = invoice(req.params.id);
@@ -172,7 +174,7 @@ async function handleWebhook(req: any, res: any) {
     console.log("PayPal webhook verification:", verified ? "SUCCESS" : "FAILURE");
     if (!verified) return res.status(401).json({ error: "Invalid webhook signature" });
   }
-  webhook(req.body);
+  await webhook(req.body);
   res.json({ ok: true });
 }
 api.post("/webhooks/paypal", wrap(handleWebhook));
@@ -186,6 +188,7 @@ api.post(
         "INVOICING.INVOICE.PAID",
         "INVOICING.INVOICE.CANCELLED",
         "INVOICING.INVOICE.REFUNDED",
+        "CHECKOUT.ORDER.APPROVED",
         "PAYMENT.CAPTURE.COMPLETED",
         "PAYMENT.CAPTURE.REFUNDED",
       ].includes(req.body.event_type)
@@ -233,13 +236,7 @@ api.post(
       if (!o) return res.sendStatus(404);
       if (o.status !== "COMPLETED") {
         saveObject({ ...o, status: "APPROVED" });
-        const captured = await paypal.captureOrder(id);
-        webhook(
-          simulated(
-            "PAYMENT.CAPTURE.COMPLETED",
-            captured.purchase_units[0].payments.captures[0].id,
-          ),
-        );
+        await webhook({ id: "WH-APPROVED-" + id, event_type: "CHECKOUT.ORDER.APPROVED", resource: { id, status: "APPROVED" } });
       }
     } else {
       const i = invoice(id);
@@ -247,7 +244,7 @@ api.post(
         return res
           .status(400)
           .json({ error: "Invoice must be sent and unpaid" });
-      webhook(simulated("INVOICING.INVOICE.PAID", id));
+      await webhook(simulated("INVOICING.INVOICE.PAID", id));
     }
     res.json({ ok: true });
   }),

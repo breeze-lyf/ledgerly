@@ -18,10 +18,12 @@
     "ui-check": "node scripts/ui-check.mjs",
     "sandbox:e2e": "node scripts/sandbox-e2e.mjs",
     "webhook:register": "node scripts/register-webhook.mjs",
-    "webhook:simulate": "node scripts/simulate-webhook.mjs"
+    "webhook:simulate": "node scripts/simulate-webhook.mjs",
+    "test:orders": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: tsx scripts/order-tests.ts"
   },
   "dependencies": {
     "@paypal/agent-toolkit": "1.11.0",
+    "axios": "^1.21.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

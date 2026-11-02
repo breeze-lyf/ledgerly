@@ -47,13 +47,13 @@ export class SandboxPayPalClient implements PayPalClient {
     this.expires = Date.now() + (d.expires_in - 60) * 1000;
     return this.token;
   }
-  async request(path: string, method = "GET", body?: Body) {
+  async request(path: string, method = "GET", body?: Body, requestId = randomUUID() as string) {
     const r = await fetch(paypalApiBase + path, {
       method,
       headers: {
         Authorization: "Bearer " + (await this.getAccessToken()),
         "Content-Type": "application/json",
-        "PayPal-Request-Id": randomUUID(),
+        "PayPal-Request-Id": requestId,
         Prefer: "return=representation",
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -135,6 +135,7 @@ export class SandboxPayPalClient implements PayPalClient {
       `/v2/checkout/orders/${encodeURIComponent(id)}/capture`,
       "POST",
       {},
+      "ledgerly-capture-" + id,
     );
   }
   refundCapture(id: string, b: Body = {}) {
@@ -242,6 +243,7 @@ export class MockPayPalClient implements PayPalClient {
   }
   async captureOrder(id: string) {
     const o = this.get(id);
+    if (o.status === "COMPLETED") return o;
     if (o.status !== "APPROVED") throw Error("ORDER_NOT_APPROVED: Approve the order using its PayPal approval link before capturing payment.");
     const capture = {
       id: "CAP-" + randomUUID().slice(0, 12),

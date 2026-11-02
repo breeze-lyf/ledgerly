@@ -38,7 +38,7 @@ export async function seed() {
       await action("send_invoice", { invoice_id: id }, true, "seed");
       if (status === "PAID" || status === "PARTIALLY_REFUNDED") {
         await paypal.recordPayment(id, { amount: { value: String(amount), currency_code: "USD" } });
-        webhook(simulated("INVOICING.INVOICE.PAID", id));
+        await webhook(simulated("INVOICING.INVOICE.PAID", id));
         if (status === "PARTIALLY_REFUNDED") {
           const capture_id = JSON.parse(invoice(id).data).capture_id;
           await action("refund", { invoice_id: id, capture_id, amount: 300, currency: "USD" }, true, "seed");

@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createRequire } from "node:module";
+import type { AxiosStatic } from "axios";
 import {
   PayPalAgentToolkit,
   ALL_TOOLS_ENABLED,
@@ -5,7 +8,22 @@ import {
 import { mock } from "../config.js";
 import { action, pendingAction, event } from "../service.js";
 import { paypal, directPayPal, withPayPalExecution, type PayPalClient } from "../paypal/index.js";
+import { normalizeOrder } from "./order-arguments.js";
 import { db } from "../db.js";
+// The SDK uses CommonJS axios and replaces API errors with an LLM-safe error.
+// Preserve only allowlisted diagnostics before that replacement, per invocation.
+const axios = createRequire(import.meta.url)("axios") as AxiosStatic;
+const diagnostics = new AsyncLocalStorage<{ error?: ReturnType<typeof safePayPalError> }>();
+function safePayPalError(raw: any) {
+  return { name: typeof raw?.name === "string" ? raw.name : "TOOLKIT_ERROR",
+    details: Array.isArray(raw?.details) ? raw.details.map((d: any) => ({ issue: d.issue, field: d.field, description: d.description })) : undefined,
+    debug_id: typeof raw?.debug_id === "string" ? raw.debug_id : undefined };
+}
+axios.interceptors.response.use(response => response, error => {
+  const context = diagnostics.getStore();
+  if (context && error?.response?.data) context.error = safePayPalError(error.response.data);
+  return Promise.reject(error);
+});
 const actions = Object.fromEntries(
   ["invoices", "orders", "payments", "refunds"].map((k) => [
     k,
@@ -44,13 +62,15 @@ export const toolkitHealth = {
       ? "toolkit"
       : "ours",
 };
+export const executionTrace = new Map<string, string>();
 export async function execute(
   name: string,
   a: any,
   session = "default",
   confirmed = false,
 ): Promise<any[]> {
-  const result = await withPayPalExecution(invokePayPal, () => executeTool(name, a, session, confirmed));
+  executionTrace.delete(session);
+  const result = await withPayPalExecution((method, args) => invokePayPal(method, args, session), () => executeTool(name, a, session, confirmed));
   if (["create_invoice", "create_invoice_series"].includes(name)) {
     const drafts = result.filter((card) => card.status === "DRAFT");
     if (drafts.length && !result.some((card) => card.kind === "pending_action"))
@@ -141,20 +161,11 @@ async function executeTool(
     }
   }
   if (name === "get_refund") return [await paypal.getRefund(a.refund_id)];
-  if (name === "create_order")
-    return action(
-      "create_payment_link",
-      {
-        currency: a.currencyCode,
-        description: a.notes || a.items?.[0]?.name,
-        amount:
-          a.items?.reduce((s: number, i: any) => s + Number(i.itemTotal), 0) +
-          Number(a.shippingCost || 0) -
-          Number(a.discount || 0),
-      },
-      false,
-      session,
-    );
+  if (name === "create_order") {
+    const order = normalizeOrder(a);
+    return action("create_payment_link", { currency: order.currencyCode,
+      description: order.notes, amount: order.amount }, false, session);
+  }
   return action(mapped, a, confirmed, session);
 }
 export function trace(tool: string) {
@@ -178,9 +189,9 @@ const toolForMethod: Partial<Record<keyof PayPalClient, string>> = {
   createOrder: "create_order", getOrder: "get_order", captureOrder: "pay_order",
   getInvoice: "get_invoice", listInvoices: "list_invoices", refundCapture: "create_refund", getRefund: "get_refund",
 };
-async function invokePayPal(method: keyof PayPalClient, args: any[]) {
+export async function invokePayPal(method: keyof PayPalClient, args: any[], session = "default", handler = toolkit.handleToolCall.bind(toolkit), force = false) {
   const name = toolForMethod[method];
-  const enabled = !mock && process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" && name &&
+  const enabled = force || !mock && process.env.PAYPAL_TOOLKIT_EXECUTION === "toolkit" && name &&
     paypalTools.some((t: any) => t.function.name === name);
   if (!enabled) {
     const value = await (directPayPal[method] as any).apply(directPayPal, args);
@@ -191,24 +202,17 @@ async function invokePayPal(method: keyof PayPalClient, args: any[]) {
     return value;
   }
   const a = toolkitArguments(method, args);
-  let result;
+  const diagnostic: { error?: ReturnType<typeof safePayPalError> } = {};
   try {
-    result = await toolkit.handleToolCall({ id: "ledgerly", type: "function",
-      function: { name: name!, arguments: JSON.stringify(a) } });
-  } catch (e) {
-    // SDK errors can contain HTTP configuration. Never expose or log those objects.
-    if (/ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test(String((e as Error).message)))
-      throw Error("ORDER_NOT_APPROVED: Order needs payer approval");
-    throw Error(`PayPal toolkit ${name} failed`);
-  }
+  const result = await diagnostics.run(diagnostic, () => handler({ id: "ledgerly", type: "function",
+    function: { name: name!, arguments: JSON.stringify(a) } }));
   let value: any = result.content;
   if (Array.isArray(value)) value = value.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
   if (typeof value === "string") {
     try { value = JSON.parse(value); } catch { throw Error("PayPal toolkit returned an invalid response"); }
   }
   if (value?.error || value?.name === "INVALID_REQUEST" || value?.name === "UNPROCESSABLE_ENTITY" || /ERROR$/.test(String(value?.name || value?.code || "")) || value?.error_details)
-    throw Error("PayPal toolkit request failed: " +
-      (value?.details?.map((d: any) => d.issue).filter(Boolean).join(", ") || value?.name || "request rejected"));
+    throw value;
   event(args[0]?.id || (typeof args[0] === "string" ? args[0] : "toolkit"), "PAYPAL.EXECUTED", { tool: name, executor: "toolkit" });
   // Toolkit mutation responses may be empty; always fetch canonical state with our client.
   if (method === "createDraftInvoice") {
@@ -223,6 +227,17 @@ async function invokePayPal(method: keyof PayPalClient, args: any[]) {
     return directPayPal.getOrder(value.id);
   }
   return value;
+  } catch (error: any) {
+    const raw = error?.response?.data || error?.error || error;
+    const safe = diagnostic.error || safePayPalError(raw);
+    console.error("PayPal toolkit error", JSON.stringify(safe));
+    if (method === "captureOrder" && safe.details?.some((d: any) => /ORDER_NOT_APPROVED|PAYER_ACTION_REQUIRED/.test(d.issue))) throw Error("ORDER_NOT_APPROVED: Order needs payer approval");
+    if (method !== "createOrder") throw Error("PayPal toolkit request failed: " + safe.name);
+    executionTrace.set(session, "ours (fallback)");
+    const value = await directPayPal.createOrder(args[0]);
+    event(value.id, "PAYPAL.EXECUTED", { operation: method, executor: "ours (fallback)" });
+    return value;
+  }
 }
 function toolkitArguments(method: keyof PayPalClient, args: any[]): any {
   if (method === "createDraftInvoice") {
@@ -232,7 +247,7 @@ function toolkitArguments(method: keyof PayPalClient, args: any[]): any {
   if (method === "createOrder") {
     const b = args[0], unit = b.purchase_units[0];
     return { currencyCode: unit.amount.currency_code, intent: b.intent,
-      items: [{ name: unit.description || "Payment", itemCost: Number(unit.amount.value), itemTotal: Number(unit.amount.value), quantity: 1 }] };
+      items: [{ name: unit.description || "Payment", itemCost: Number(unit.amount.value), itemTotal: Number(unit.amount.value), quantity: 1, taxPercent: 0 }] };
   }
   if (["getOrder", "captureOrder"].includes(method)) return { id: args[0] };
   if (method === "getRefund") return { refund_id: args[0] };

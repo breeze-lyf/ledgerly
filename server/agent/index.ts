@@ -1,7 +1,7 @@
 import { confirmAction, resolve } from "../service.js";
 import { db } from "../db.js";
 import { llmConfigured } from "../config.js";
-import { execute, paypalTools, trace } from "./toolkit.js";
+import { execute, paypalTools, trace, executionTrace } from "./toolkit.js";
 const own = (name: string, properties: any) => ({
   type: "function",
   function: {
@@ -13,6 +13,7 @@ const own = (name: string, properties: any) => ({
 const str = { type: "string" };
 const tools = [
   ...paypalTools,
+  own("refund_order", { order_id: str, amount: { type: "number" } }),
   own("refund_invoice", { client: str, invoice_id: str, amount: { type: "number" } }),
   own("create_invoice_series", {
     client_name: str,
@@ -107,13 +108,15 @@ function parse(s: string): [string, any] {
         currencyCode: "USD",
         items: [
           {
-            name: "Payment",
-            itemCost: Number(s.match(/\$([\d,.]+)/)?.[1]),
-            itemTotal: Number(s.match(/\$([\d,.]+)/)?.[1]),
+            name: s.match(/\bfor\s+(.+)$/i)?.[1] || "Payment",
+            itemCost: Number(s.match(/\$([\d,.]+)/)?.[1]?.replaceAll(",", "")),
+            itemTotal: Number(s.match(/\$([\d,.]+)/)?.[1]?.replaceAll(",", "")),
           },
         ],
       },
     ];
+  const refundOrder = s.match(/refund(?:\s+\$([\d,.]+))?\s+(?:on|for)\s+order\s+(\S+)/i);
+  if (refundOrder) return ["refund_order", { order_id: refundOrder[2], amount: refundOrder[1] ? Number(refundOrder[1].replaceAll(",", "")) : undefined }];
   if (/refund/i.test(s))
     return [
       "refund_invoice",
@@ -192,7 +195,9 @@ export async function chat(message: string, session = "default") {
       }
     }
     traces.push(trace(name));
-    return execute(name, args, session);
+    const result = await execute(name, args, session);
+    if (executionTrace.has(session)) traces[traces.length - 1].executor = executionTrace.get(session);
+    return result;
   };
   try {
     const pending = state(session);
@@ -256,7 +261,7 @@ export async function chat(message: string, session = "default") {
             {
               role: "system",
               content:
-                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
+                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds on an order use refund_order with order_id and optional amount. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
             },
             ...history,
           ];

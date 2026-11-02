@@ -1,6 +1,6 @@
 import { mock } from "./config.js";
 import { randomUUID } from "node:crypto";
-import { db, invoice, invoices, object, saveObject } from "./db.js";
+import { db, invoice, invoices, object, saveObject, order } from "./db.js";
 import { paypal } from "./paypal/index.js";
 export const listeners = new Set<(event: any) => void>();
 export function event(id: string, type: string, data: any = {}) {
@@ -126,6 +126,11 @@ export async function action(
   confirmed = false,
   session = "default",
 ): Promise<any[]> {
+  if (name === "refund_order" || (name === "refund" && a.order_id && !a.capture_id)) {
+    const o = order(a.order_id);
+    if (!o?.capture_id) throw Error("Order has no captured payment");
+    return action("refund", { ...a, order_id: o.id, capture_id: o.capture_id, currency: o.currency }, confirmed, session);
+  }
   if (name === "refund_invoice") {
     const ref = a.invoice_id || a.client || "";
     const i = invoice(ref) || invoices().find((i) =>
@@ -304,6 +309,8 @@ export async function action(
         },
       ],
     });
+    saveObject(o);
+    db.prepare("INSERT INTO orders(id,description,amount,currency,status,approve_url,data) VALUES (?,?,?,?,?,?,?)").run(o.id, a.description || "Payment", Number(a.amount), a.currency || "USD", o.status, o.links?.find((l: any) => ["approve", "payer-action"].includes(l.rel))?.href || null, JSON.stringify(o));
     event(o.id, "ORDER.CREATED");
     return [
       {
@@ -360,6 +367,15 @@ export async function action(
       event(i.id, "REFUND", { amount: a.amount, capture_id: a.capture_id });
       return [{ ...invoice(i.id), remaining_refundable:
         (Number(i.paid_amount) || i.amount) - refunded }];
+    }
+    if (a.order_id) {
+      const o = order(a.order_id);
+      const refunded = Number(o.refunded) + Number(a.amount || remaining);
+      const status = refunded >= o.amount ? "REFUNDED" : "COMPLETED";
+      db.prepare("UPDATE orders SET refunded=?,status=? WHERE id=?").run(refunded, status, o.id);
+      db.prepare("UPDATE payments SET refunded=?,status=? WHERE order_id=?").run(refunded, refunded >= o.amount ? "REFUNDED" : "PARTIALLY_REFUNDED", o.id);
+      event(o.id, "PAYMENT.REFUNDED", { capture_id: a.capture_id, amount: Number(r.amount?.value), refund_id: r.id });
+      return [{ ...order(o.id), kind: "payment", remaining_refundable: o.amount - refunded }];
     }
     return [r];
   }
@@ -459,6 +475,7 @@ export async function action(
 }
 export function simulated(type: string, id: string, amount?: number) {
   const i = invoice(id);
+  if (mock && type === "CHECKOUT.ORDER.APPROVED" && object(id)?.status === "CREATED") saveObject({ ...object(id), status: "APPROVED" });
   return {
     id: "WH-" + randomUUID(),
     event_type: type,
@@ -483,9 +500,40 @@ export function simulated(type: string, id: string, amount?: number) {
         },
   };
 }
-export function webhook(e: any) {
+const capturing = new Map<string, Promise<any>>();
+export async function captureApproved(id: string) {
+  if (capturing.has(id)) return capturing.get(id);
+  const work = (async () => {
+    const o = order(id);
+    if (o?.capture_id) return;
+    let remote = await paypal.getOrder(id);
+    if (!o) {
+      const unit = remote.purchase_units[0];
+      db.prepare("INSERT OR IGNORE INTO orders(id,description,amount,currency,status,data) VALUES (?,?,?,?,?,?)").run(id, unit.description || "Payment", Number(unit.amount.value), unit.amount.currency_code, remote.status, JSON.stringify(remote));
+    }
+    db.prepare("UPDATE orders SET status='APPROVED' WHERE id=? AND capture_id IS NULL").run(id);
+    if (remote.status !== "COMPLETED") remote = await paypal.captureOrder(id);
+    const c = remote.purchase_units?.flatMap((u: any) => u.payments?.captures || [])[0];
+    if (!c?.id) throw Error("Capture response missing capture id");
+    saveObject({ ...c, order_id: id });
+    saveObject(remote);
+    db.transaction(() => {
+      db.prepare("UPDATE orders SET capture_id=?,data=? WHERE id=?").run(c.id, JSON.stringify(remote), id);
+      db.prepare("INSERT OR IGNORE INTO payments(id,order_id,amount,currency,status) VALUES (?,?,?,?,?)").run(c.id, id, Number(c.amount.value), c.amount.currency_code, "CAPTURED");
+    })();
+    event(id, "PAYMENT.CAPTURED", { capture_id: c.id });
+    if (mock) await webhook({ id: "WH-COMPLETED-" + c.id, event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { ...c, supplementary_data: { related_ids: { order_id: id } } } });
+  })();
+  capturing.set(id, work);
+  try { await work; } finally { capturing.delete(id); }
+}
+export async function webhook(e: any) {
   if (!e.id || !e.event_type || !e.resource) throw Error("Invalid webhook");
-  if (db.prepare("SELECT id FROM events WHERE id=?").get(e.id)) return;
+  const duplicate = db.prepare("SELECT id FROM events WHERE id=?").get(e.id);
+  if (duplicate) {
+    if (e.event_type === "CHECKOUT.ORDER.APPROVED") await captureApproved(e.resource.id);
+    return;
+  }
   const r = e.resource;
   let id = r.invoice?.id || r.invoice_id || r.id;
   const related = r.supplementary_data?.related_ids;
@@ -509,6 +557,13 @@ export function webhook(e: any) {
         id,
       );
   })();
+  if (e.event_type === "PAYMENT.CAPTURE.COMPLETED" && order(id)) {
+    saveObject({ ...r, order_id: id, refunded: object(r.id)?.refunded || 0 });
+    db.prepare("UPDATE orders SET status=CASE WHEN refunded>=amount THEN 'REFUNDED' ELSE 'COMPLETED' END,capture_id=? WHERE id=?").run(r.id, id);
+    const o = order(id);
+    db.prepare("INSERT INTO payments(id,order_id,amount,currency,status) VALUES (?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET status=CASE WHEN payments.refunded>0 THEN payments.status ELSE 'PAID' END").run(r.id, id, o.amount, o.currency, "PAID");
+  }
+  if (e.event_type === "CHECKOUT.ORDER.APPROVED") await captureApproved(r.id);
   if (status === "PAID") {
     db.prepare("UPDATE invoices SET paid_amount=amount WHERE id=?").run(id);
     const i = invoice(id);
@@ -528,7 +583,7 @@ export function webhook(e: any) {
           ...(payment_id ? { payment_id } : {}) }), i.id);
     }
   }
-  if (status && object(id)) saveObject({ ...object(id), status });
+  if (status && !order(id) && object(id)) saveObject({ ...object(id), status });
   for (const fn of listeners) fn(e);
 }
 

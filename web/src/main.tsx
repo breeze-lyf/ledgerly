@@ -42,6 +42,8 @@ type Invoice = {
 function App() {
   const [health, H] = useState<any>({});
   const [loading, Loading] = useState(true);
+  const [sideTab, SideTab] = useState("invoices");
+  const [orders, Orders] = useState<any[]>([]);
   const [rows, R] = useState<Invoice[]>([]);
   const [selected, S] = useState<Invoice | null>(null);
   const [messages, M] = useState<any[]>([]);
@@ -60,6 +62,7 @@ function App() {
   async function refresh() {
     const r = await api("invoices");
     R(r);
+    Orders(await api("orders"));
     Loading(false);
   }
   useEffect(() => {
@@ -408,6 +411,8 @@ function App() {
                         >
                           Open payment link ↗
                         </a>
+                      ) : c.kind === "payment" ? (
+                        <div className="chat-card" key={j}><b>Payment {c.id}</b><p>{c.status} · Refunded {money(c.refunded || 0, c.currency)}</p></div>
                       ) : c.client ? (
                         <button
                           className="chat-card"
@@ -489,6 +494,8 @@ function App() {
             </div>
           </section>
           <aside className="panel invoices">
+            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button></div>
+            {sideTab === "invoices" && <>
             <div className="panel-heading">
               <b>
                 {selected ? "Invoice details" : "Your invoices"}{" "}
@@ -621,6 +628,29 @@ function App() {
                 )}
               </div>
             )}
+            </>}
+            {sideTab === "orders" && <div className="details order-list">
+              <h3>Orders & payments <span className="count">{orders.length}</span></h3>
+              {!orders.length && <p>No payment links yet.</p>}
+              {orders.map(o => <div className="chat-card" key={o.id}>
+                <b>{o.description}</b><p>{money(o.amount, o.currency)} <span className={"badge " + o.status}>{o.status}</span></p>
+                <code>{o.id}</code>
+                {o.capture_id && <p>Payment {o.capture_id} · {o.payment?.status}</p>}
+                {o.refunded > 0 && <p>Refunded {money(o.refunded, o.currency)}</p>}
+                <div className="actions">
+                  {o.approve_url && <><a href={o.approve_url} target="_blank" rel="noreferrer">Approve ↗</a><button onClick={() => navigator.clipboard.writeText(o.approve_url).catch(() => E("Could not copy link"))}>Copy approval link</button></>}
+                  {o.capture_id && o.amount > o.refunded && <button disabled={busy} onClick={() => {
+                    const value = window.prompt("Refund amount (confirmation follows)", (o.amount - o.refunded).toFixed(2));
+                    if (value !== null) {
+                      const amount = Number(value);
+                      if (!Number.isFinite(amount) || amount <= 0) { E("Enter a positive refund amount"); return; }
+                      cardAction(`orders/${o.id}/refund`, { amount });
+                    }
+                  }}>Refund</button>}
+                </div>
+                <details><summary>Payment timeline</summary>{o.timeline.map((e: any) => <p key={e.id}>{e.event_type} · {e.created_at}</p>)}</details>
+              </div>)}
+            </div>}
             <div className="panel-foot">
               ♧ Connected to PayPal · Updates in real time
             </div>

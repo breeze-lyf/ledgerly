@@ -50,3 +50,8 @@ for (const [table, column, type] of [
 }
 db.exec(`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, pending TEXT);
 CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, session_id TEXT, name TEXT, args TEXT, status TEXT DEFAULT 'pending');`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, description TEXT, amount REAL, currency TEXT, status TEXT, capture_id TEXT, refunded REAL DEFAULT 0, approve_url TEXT, data TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, order_id TEXT UNIQUE, amount REAL, currency TEXT, status TEXT, refunded REAL DEFAULT 0);`);
+export function order(id: string) { return db.prepare("SELECT * FROM orders WHERE id=?").get(id) as any; }
+export function orders() { return (db.prepare("SELECT * FROM orders ORDER BY created_at DESC,rowid DESC").all() as any[]).map(o => ({ ...o, kind: "payment", payment: db.prepare("SELECT * FROM payments WHERE order_id=?").get(o.id), timeline: db.prepare("SELECT * FROM events WHERE invoice_id=? ORDER BY rowid").all(o.id) })); }
