@@ -58,7 +58,7 @@ Open http://localhost:3000/. Default mode is mock: no money moves. Try the **Inv
 | Variable | Default / purpose |
 | --- | --- |
 | `PORT` | `3000` |
-| `BASE_PATH` | `/`; use `/paypal-agent/` behind the demo proxy |
+| `BASE_PATH` | `/` (live deployment uses the root path) |
 | `DB_PATH` | `./data/app.db` |
 | `PAYPAL_MODE` | `mock`; `sandbox` enables real sandbox API requests |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Sandbox app credentials |
@@ -108,10 +108,12 @@ Sandbox mode sends requests to PayPal's sandbox and verifies webhook signatures 
 
 ## Deployment
 
-[Deployment guide](docs/DEPLOY.md) covers the prepared systemd unit, prefix-preserving nginx snippet, public webhook route, and explicitly gated upload script. Deployment is a separate operator action.
+[Deployment guide](docs/DEPLOY.md) covers the prepared systemd unit, root-path nginx configuration, public webhook route, and explicitly gated upload script. Deployment is a separate operator action.
 
 [Devpost submission](docs/DEVPOST.md) · [Demo video script](docs/VIDEO_SCRIPT.md)
 
 ## License
 
 [MIT](LICENSE).
+
+Live deployment: https://ledgerly.yufeng.fun/ at the root path. See [deployment instructions](docs/DEPLOY.md) for the opt-in deployment script, TLS, sandbox seeding and read-mostly UI checks.

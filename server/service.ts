@@ -226,11 +226,11 @@ export async function action(
 
   if (name === "create_invoice") {
     const count = Math.min(24, Math.max(1, Number(a.recurrence?.count || 1)));
-    const group = count > 1 ? randomUUID() : null;
+    const group = a.recurrence_group || (count > 1 ? randomUUID() : null);
     const result = [];
     for (let n = 0; n < count; n++) {
-      const due = new Date();
-      due.setDate(due.getDate() + Number(a.due_in_days ?? 14));
+      const due = a.due_date ? new Date(a.due_date + "T12:00:00Z") : new Date();
+      if (!a.due_date) due.setDate(due.getDate() + Number(a.due_in_days ?? 14));
       due.setMonth(due.getMonth() + n);
       const amount = a.items.reduce(
         (s: number, i: any) => s + Number(i.quantity) * Number(i.unit_amount),
@@ -560,7 +560,7 @@ export async function invoicePayload(a: any, dueDate: string) {
       currency_code: currency,
       invoice_date: a.invoice_date || localDate(),
       ...(a.note ? { note: a.note } : {}),
-      payment_term: { term_type: "DUE_ON_DATE_SPECIFIED", due_date: dueDate },
+      payment_term: a.payment_term === "NET_10" ? { term_type: "NET_10" } : { term_type: "DUE_ON_DATE_SPECIFIED", due_date: dueDate },
     },
     invoicer: { email_address: process.env.PAYPAL_SANDBOX_BUSINESS_EMAIL || (mock ? "merchant@example.com" : undefined) },
     primary_recipients: [{ billing_info: {

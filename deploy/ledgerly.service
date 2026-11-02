@@ -6,6 +6,9 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/ledgerly
+Environment=HOST=127.0.0.1
+Environment=PORT=3910
+Environment=BASE_PATH=/
 EnvironmentFile=/opt/ledgerly/.env
 ExecStart=/usr/local/bin/node dist/index.js
 Restart=always

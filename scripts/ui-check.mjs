@@ -3,7 +3,8 @@ import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const target = new URL(process.env.URL || 'http://localhost:3400/paypal-agent/');
-if (!['localhost', '127.0.0.1', '[::1]'].includes(target.hostname))
+const readonly = process.env.UI_READONLY === '1';
+if (!readonly && !['localhost', '127.0.0.1', '[::1]'].includes(target.hostname))
   throw Error('ui-check only targets loopback URLs; it never starts a server.');
 const browser = await chromium.launch({ headless: true,
   ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
@@ -45,6 +46,41 @@ try {
     await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('aria-busy') === 'false');
     return r.json();
   };
+  if (readonly) {
+    // Deny all writes except the one reconciliation prompt (chat history is persisted).
+    await page.route('**/api/**', route => {
+      const request = route.request();
+      if (['GET', 'HEAD'].includes(request.method())) return route.continue();
+      if (new URL(request.url()).pathname.endsWith('/api/chat') &&
+          request.postDataJSON()?.message === "Who hasn't paid this month?") return route.continue();
+      return route.abort();
+    });
+    for (const [device, viewport] of [['desktop', { width: 1440, height: 900 }], ['mobile', { width: 390, height: 844 }]]) {
+      await page.setViewportSize(viewport);
+      await page.goto(target.href);
+      if (device === 'mobile') await page.getByRole('button', { name: 'Chat', exact: true }).click();
+      await visible(page.getByText('Less chasing. More creating.'));
+      await shot(`${device}-readonly-empty`);
+      if (device === 'mobile') await page.getByRole('button', { name: 'Invoices', exact: true }).click();
+      await visible(page.locator('.invoice-row').first());
+      await shot(`${device}-readonly-invoices`);
+      await page.locator('.invoice-row').first().click();
+      await visible(page.locator('.timeline'));
+      await shot(`${device}-readonly-detail`);
+      if (device === 'mobile') await page.getByRole('button', { name: 'Chat', exact: true }).click();
+      const result = await ask("Who hasn't paid this month?");
+      assert.equal(result.cards[0].kind, 'summary');
+      if (device === 'mobile') await page.getByRole('button', { name: 'Chat', exact: true }).click();
+      await visible(page.locator('.summary'));
+      await shot(`${device}-readonly-reconcile`);
+      // Fresh chat empty state for the next viewport without deleting server history.
+      await context.clearCookies();
+      await page.evaluate(() => localStorage.removeItem('ledgerly-session'));
+    }
+    assert.deepEqual(problems, [], 'No console or request errors');
+    console.log('PASS: read-mostly desktop/mobile empty chat, invoices, detail timeline, reconciliation.');
+    await context.close();
+  } else {
   // Render the real invoice empty state without deleting the seeded database.
   await page.route('**/api/invoices', r => r.fulfill({ json: [] }));
   await page.goto(target.href);
@@ -112,4 +148,5 @@ try {
   await context.close();
   assert.deepEqual(problems, [], 'No unexpected console errors, failed requests, HTTP errors, or remote requests');
   console.log('PASS: empty state, series, button confirmation/System badge, paid webhook, timeline, reconciliation, detail reminder, firm dunning, partial refund, mobile tabs, error state; screenshots saved.');
+  }
 } finally { await browser.close(); }

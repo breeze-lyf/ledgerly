@@ -11,6 +11,7 @@
     "build:web": "tsc -p web/tsconfig.json && vite build --config web/vite.config.ts",
     "build": "npm run build:web && tsc -p tsconfig.server.json",
     "start": "node dist/index.js",
+    "seed:sandbox": "node scripts/seed-sandbox.mjs",
     "seed": "tsx scripts/seed.ts",
     "reset": "tsx scripts/reset.ts",
     "smoke": "bash scripts/smoke.sh",

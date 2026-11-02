@@ -1,54 +1,41 @@
-# Deploying Ledgerly
+# Deploy Ledgerly
 
-Deployment files are preparation only. No deployment is required to use the local mock demo. The upload script contacts the server only when invoked with an explicit `--yes` flag.
+Live URL: https://ledgerly.yufeng.fun/ (BASE_PATH=/).
+Node runs in /opt/ledgerly under ledgerly.service, listening on 127.0.0.1:3910.
+Install Node 20+, npm, Python, make, g++, nginx and certbot on <server>.
 
-## Target layout and prerequisites
+Provision /opt/ledgerly/.env privately from deploy/env.production.example, set PayPal sandbox credentials and business email, and restrict permissions to 600. Never put credentials in commands or source control. Deployment requires this file and never overwrites it. ADMIN_TOKEN is optional; the local purge route is disabled when unset.
 
-Use `/opt/ledgerly` with Node.js 20+ at `/usr/local/bin/node`, npm, Python 3, make, and g++ available on the server. `better-sqlite3` is a native dependency; `npm_config_build_from_source=true npm ci --omit=dev --foreground-scripts` builds its production binary on the target. The unit runs as root for compatibility with the supplied target; a dedicated service user is preferable when ownership of `/opt/ledgerly/data` and the environment file is configured accordingly.
+Point DNS to <server>. Bootstrap HTTP using deploy/ledgerly.http.conf at /etc/nginx/conf.d/ledgerly.conf, create /var/www/html, run nginx -t and reload. Issue TLS before installing the HTTPS configuration:
 
-The bundle includes `dist`, `web/dist`, package files, and deployment templates. It excludes local `.env`, database files, and credentials. Back up production SQLite data separately before upgrading.
-
-## Environment
-
-`deploy/env.production.example` uses port 3910, `/paypal-agent/`, PayPal sandbox, the requested LLM endpoint and model, empty credential placeholders, and `/opt/ledgerly/data/app.db`. The script creates `/opt/ledgerly/.env` with mode 600 only if it does not exist; it never replaces an existing file or supplies keys. Populate the sandbox and LLM credentials on the server through your normal secret-management process. An empty LLM key selects fallback mode.
-
-`SEED_ON_START=1` seeds only an empty **mock** database. It is deliberately ignored in sandbox mode: demo fixtures must never issue sandbox financial operations on startup. To explore fixtures, run the app locally in mock mode. Never mix a mock database with sandbox records.
-
-## nginx and systemd
-
-Include `/etc/nginx/ledgerly-paypal-agent.locations` **inside the existing `demo.yufeng.fun` 443 server block**. Do not create a competing TLS server. The snippet redirects `/paypal-agent` to `/paypal-agent/` and proxies to `http://127.0.0.1:3910` without a URI suffix or rewrite. The app must receive the prefix and keep `BASE_PATH=/paypal-agent/`.
-
-The demo nginx configuration uses `auth_request` for some applications. Ledgerly's location explicitly uses `auth_request off`: **paypal-agent must be public**, so PayPal can reach its webhook. Do not place a login redirect or authentication gate in front of that route. This demo is not a tenant-isolated production application.
-
-SSE needs HTTP/1.1, an empty upstream Connection header, buffering/cache disabled, and a long read timeout. Both the app stream response and nginx emit `X-Accel-Buffering: no`.
-
-The deployment script takes `NGINX_CONF` as the path to the existing remote nginx file, verifies a unique matching TLS block, and saves a timestamped backup before inserting the include. If it cannot find a safe insertion point, it stops for manual configuration. `nginx -t` must pass before reload. The script installs/enables/restarts only the `ledgerly` systemd unit, reloads nginx, and checks local and public health endpoints. It never restarts Docker.
-
-## Explicit deployment command
-
-Review the files and configure `/workspace/evs/s.py` first. Then, when intentionally deploying:
-
-```bash
-NGINX_CONF=/etc/nginx/sites-available/demo.yufeng.fun \
-  bash deploy/deploy.sh --yes
+```sh
+certbot certonly --webroot -w /var/www/html --cert-name ledgerly.yufeng.fun -d ledgerly.yufeng.fun
 ```
 
-The script builds locally, archives the release, uploads using `python3 /workspace/evs/s.py put <local> <remote>`, and executes remote commands using `python3 /workspace/evs/s.py '<cmd>'`. It then runs the production dependency installation on the target. The nginx path above is an example; use the actual existing configuration path. Review a failed nginx test and restore the timestamped backup if necessary; never force a reload of an invalid configuration.
+Deploy from this repository:
 
-## PayPal webhook configuration
+```sh
+DEPLOY_HOST='<server>' BRIDGE=/workspace/evs/s.py bash deploy/deploy.sh --yes --nginx
+```
 
-Register this URL in the PayPal sandbox app:
+The bridge wrapper retains the existing bridge credential loader and overrides its SSH host in memory. BRIDGE defaults to /workspace/evs/s.py. Build uses BASE_PATH=/; the release contains built assets, package manifests and deploy files. Remote installation runs npm ci --omit=dev, installs the service, restarts it and checks /api/health. Without --nginx no nginx file is touched. With --nginx, /etc/nginx/conf.d/ledgerly.conf is timestamp-backed up, replaced, validated and reloaded; invalid configuration is restored. Subsequent app-only releases need only --yes.
 
-`https://demo.yufeng.fun/paypal-agent/api/webhooks/paypal`
+Register the sandbox webhook using the existing secret loader:
 
-Subscribe to the handled events:
+```sh
+npm run webhook:register -- https://ledgerly.yufeng.fun/api/webhooks/paypal
+```
 
-- `INVOICING.INVOICE.PAID`
-- `INVOICING.INVOICE.CANCELLED`
-- `INVOICING.INVOICE.REFUNDED`
-- `PAYMENT.CAPTURE.COMPLETED`
-- `PAYMENT.CAPTURE.REFUNDED`
+Privately set the resulting PAYPAL_WEBHOOK_ID in /opt/ledgerly/.env and restart ledgerly.service. Do not publish environment files or command output containing credentials.
 
-Save the returned webhook ID as `PAYPAL_WEBHOOK_ID`. Sandbox requests are verified with PayPal's webhook signature verification API before processing. Mock mode skips remote verification and exposes simulation controls; it is for local demonstrations. Validate real event payloads and capture-to-invoice relationships in your sandbox before relying on reconciliation for live operations.
+## Demo data
 
-Check `/paypal-agent/api/health`, an invoice detail, and the SSE stream after configuration. Health reports configuration presence and execution mode; it does not prove credentials are valid.
+`URL=https://ledgerly.yufeng.fun/ npm run seed:sandbox` uses only the deployed HTTP API, no LLM or local PayPal credentials. It creates six clients with two paid, one partially refunded, two sent, one draft, plus three monthly retainer drafts. All carry ledgerly-demo-seed in the note; IDs are saved incrementally in data/seed-sandbox.json. Do not run concurrent seeds. Interrupted runs retain IDs; clean and archive the manifest before reseeding.
+
+Overdue creation tries a past explicit due date, then NET_10 with a backdated issue date, then today as the earliest attempted allowed date. Fallback results are recorded in the manifest; no remote overdue claim is made until the due date has passed.
+
+`npm run seed:sandbox -- --clean` deletes drafts and cancels eligible sent invoices. Paid/refunded invoices remain on PayPal. Add --purge-local with ADMIN_TOKEN supplied privately through the environment to remove all manifest IDs from the local mirror as well.
+
+To remove the three Acme test drafts from the mirror, POST /api/admin/purge-local with JSON `{"ids":["<id1>","<id2>","<id3>"]}` and header x-admin-token supplied privately. This removes only local invoice/event/cache rows, not PayPal invoices or historical chat. POST /api/invoices/:id/delete deletes only a remotely verified DRAFT on PayPal before deleting its local mirror.
+
+`UI_READONLY=1 URL=https://ledgerly.yufeng.fun/ CHROMIUM_PATH=/opt/ungoogled-chromium/chrome npm run ui-check` captures both viewports without sending invoices or refunds. Only reconciliation chat writes history; other mutations are blocked. Existing invoices are required. Without CHROMIUM_PATH, Playwright's Chromium is used.

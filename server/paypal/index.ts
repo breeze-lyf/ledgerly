@@ -8,6 +8,7 @@ export interface PayPalClient {
   generateInvoiceNumber(): Promise<any>;
   createDraftInvoice(body: Body): Promise<any>;
   getInvoice(id: string): Promise<any>;
+  deleteInvoice(id: string): Promise<any>;
   updateInvoice(id: string, body: Body): Promise<any>;
   listInvoices(): Promise<any>;
   sendInvoice(id: string, body?: Body): Promise<any>;
@@ -71,6 +72,9 @@ export class SandboxPayPalClient implements PayPalClient {
   }
   createDraftInvoice(b: Body) {
     return this.request("/v2/invoicing/invoices", "POST", b);
+  }
+  deleteInvoice(id: string) {
+    return this.request("/v2/invoicing/invoices/" + encodeURIComponent(id), "DELETE");
   }
   getInvoice(id: string) {
     return this.request("/v2/invoicing/invoices/" + encodeURIComponent(id));
@@ -178,6 +182,11 @@ export class MockPayPalClient implements PayPalClient {
         { rel: "payer-view", href: base + "mock-pay/" + id },
       ],
     });
+  }
+  async deleteInvoice(id: string) {
+    if (this.get(id).status !== "DRAFT") throw Error("Only draft invoices can be deleted");
+    db.prepare("DELETE FROM paypal_objects WHERE id=?").run(id);
+    return {};
   }
   async getInvoice(id: string) {
     return this.get(id);

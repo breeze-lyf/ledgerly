@@ -1,5 +1,6 @@
 import "./config.js";
 import express from "express";
+import { timingSafeEqual } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { base, mock, llmConfigured } from "./config.js";
@@ -70,6 +71,49 @@ api.post(
     });
   }),
 );
+function purgeLocal(ids: string[]) {
+  db.transaction(() => {
+    for (const id of ids) {
+      const row = invoice(id);
+      if (!row) continue;
+      db.prepare("DELETE FROM events WHERE invoice_id=?").run(row.id);
+      db.prepare("DELETE FROM invoices WHERE id=?").run(row.id);
+      db.prepare("DELETE FROM paypal_objects WHERE id IN (?,?)").run(row.id, row.paypal_id);
+    }
+  })();
+}
+api.post("/admin/purge-local", (req, res) => {
+  const token = process.env.ADMIN_TOKEN;
+  if (!token) return res.sendStatus(404);
+  const supplied = Buffer.from(req.get("x-admin-token") || "");
+  const expected = Buffer.from(token);
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return res.sendStatus(403);
+  const ids = req.body.ids;
+  if (!Array.isArray(ids) || ids.length > 500 || !ids.every((id: any) => typeof id === "string" && id.length > 0))
+    return res.status(400).json({ error: "ids must be an array of up to 500 nonempty strings" });
+  purgeLocal(ids);
+  res.json({ ok: true });
+});
+api.post("/invoices", wrap(async (req: any, res: any) => {
+  const a = req.body;
+  if (typeof a.client_name !== "string" || !a.client_name.trim() || !Array.isArray(a.items) || !a.items.length ||
+      !a.items.every((i: any) => typeof i.name === "string" && Number(i.quantity) > 0 && Number(i.unit_amount) > 0))
+    return res.status(400).json({ error: "Client and positive invoice items required" });
+  for (const date of [a.due_date, a.invoice_date])
+    if (date !== undefined && (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date))))
+      return res.status(400).json({ error: "Dates must use YYYY-MM-DD" });
+  res.json(await action("create_invoice", a));
+}));
+api.post("/invoices/:id/delete", wrap(async (req: any, res: any) => {
+  const row = invoice(req.params.id);
+  if (!row) return res.sendStatus(404);
+  if (row.status !== "DRAFT") return res.status(409).json({ error: "Only draft invoices can be deleted" });
+  const remote = await paypal.getInvoice(row.paypal_id);
+  if (remote.status !== "DRAFT") return res.status(409).json({ error: "PayPal invoice is no longer a draft" });
+  await paypal.deleteInvoice(row.paypal_id);
+  purgeLocal([row.id]);
+  res.json({ ok: true });
+}));
 api.get("/invoices", (_req, res) => res.json(invoices()));
 api.get("/invoices/:id", (req, res) => {
   const i = invoice(req.params.id);
@@ -222,6 +266,6 @@ app.use((err: any, _req: any, res: any, _next: any) => {
   console.error(err.message);
   res.status(400).json({ error: err.message || "Request failed" });
 });
-app.listen(Number(process.env.PORT || 3000), "0.0.0.0", () =>
+app.listen(Number(process.env.PORT || 3000), process.env.HOST || "0.0.0.0", () =>
   console.log(`Ledgerly: http://localhost:${process.env.PORT || 3000}${base}`),
 );
