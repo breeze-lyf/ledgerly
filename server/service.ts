@@ -1,3 +1,4 @@
+import { scanCollections, reminderPlan, recordReminder, cashflow, unpaid } from "./collections.js";
 import { mock } from "./config.js";
 import { randomUUID } from "node:crypto";
 import { db, invoice, invoices, object, saveObject, order } from "./db.js";
@@ -32,12 +33,12 @@ export function pendingAction(name: string, args: any, session = "default") {
     const previous = JSON.parse(row.args);
     const ids = args.invoice_ids || [args.invoice_id];
     const previousIds = previous.invoice_ids || [previous.invoice_id];
-    return name === "send_invoice" && ids.length === previousIds.length &&
+    return ["send_invoice", "remind_invoice"].includes(name) && ids.length === previousIds.length &&
       ids.every((id: string) => previousIds.includes(id));
   });
   if (existing) return {
     kind: "pending_action", id: existing.id, name,
-    label: "Confirm send", args: JSON.parse(existing.args),
+    label: name === "remind_invoice" ? "Confirm reminder" : "Confirm send", args: JSON.parse(existing.args),
   };
   const id = randomUUID();
   db.prepare(
@@ -47,7 +48,7 @@ export function pendingAction(name: string, args: any, session = "default") {
     kind: "pending_action",
     id,
     name,
-    label: name === "refund" ? "Confirm refund" : "Confirm send",
+    label: name === "refund" ? "Confirm refund" : name === "remind_invoice" ? "Confirm reminder" : "Confirm send",
     args,
   };
 }
@@ -143,6 +144,17 @@ export async function action(
       (p: any) => p.capture_id)?.capture_id;
     return action("refund", { invoice_id: i.id, amount, currency: i.currency,
       ...(capture_id ? { capture_id } : {}) }, false, session);
+  }
+  if (name === "what_needs_collecting") return [scanCollections()];
+  if (name === "cashflow") return [{kind:"cashflow", ...cashflow()}];
+  if (name === "run_collections") {
+    const scan = scanCollections();
+    return [scan, ...scan.rows.filter(i => i.eligible).map(i => pendingAction("remind_invoice", reminderPlan(i), session))];
+  }
+  if (name === "remind_invoice" && !confirmed) {
+    const i = resolve(a.invoice_id);
+    if (!unpaid(i)) throw Error("Only unpaid, sent invoices can be reminded");
+    return [pendingAction(name, {...a, invoice_id:i.id}, session)];
   }
   if (name === "create_invoice_series") name = "create_invoice";
   if (name === "reconcile") {
@@ -404,13 +416,14 @@ export async function action(
     await paypal.sendInvoice(i.paypal_id);
     status = "SENT";
   } else if (name === "remind_invoice") {
-    if (!["SENT", "PARTIALLY_PAID"].includes(i.status))
-      throw Error("Send the invoice before reminding");
+    if (!unpaid(i)) throw Error("Send the invoice before reminding");
     await paypal.remindInvoice(i.paypal_id, {
       subject: a.subject || "Payment reminder",
       note: a.message || "A friendly reminder about your invoice.",
       send_to_recipient: true,
     });
+    recordReminder(i.id, a.tone);
+    event(i.id, "COLLECTIONS.REMINDED", {tone:a.tone || "friendly", message:a.message});
   } else if (name === "cancel_invoice") {
     if (!["DRAFT", "SENT", "PARTIALLY_PAID"].includes(i.status))
       throw Error("This invoice cannot be cancelled");

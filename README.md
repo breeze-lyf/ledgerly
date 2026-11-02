@@ -117,3 +117,11 @@ Sandbox mode sends requests to PayPal's sandbox and verifies webhook signatures 
 [MIT](LICENSE).
 
 Live deployment: https://ledgerly.yufeng.fun/ at the root path. See [deployment instructions](docs/DEPLOY.md) for the opt-in deployment script, TLS, sandbox seeding and read-mostly UI checks.
+
+### Collections + Cashflow
+
+Ask **“What needs collecting?”**, **“Run collections”**, **“Send overdue reminders”**, or **“Cashflow this month”**. Collections scans overdue invoices and those due within seven days, proposes friendly, firm, or final reminders, and requires explicit confirmation before every send. Successful reminders persist their tone, count, next follow-up date, plan notes, and timeline history in SQLite. Follow-ups wait three days after a successful reminder. First reminders are friendly; subsequent reminders escalate with age and reminder count.
+
+The dashboard uses the local PayPal invoice mirror for outstanding, overdue, next-seven-day balances and unpaid counts. Client risk is labeled **heuristic**, based on late paid invoices and current overdue age. Currency totals stay separate; the top strip displays USD. Refresh/sync the local mirror to reflect remote changes.
+
+Read-only APIs: `GET /api/collections`, `GET /api/cashflow`. `POST /api/collections/run` proposes pending reminders (even if a caller supplies `confirm: true`); confirm each through the existing actions endpoint. `COLLECTIONS_AUTO=1` (or `SEED=1`) enables a six-hour scan that logs candidate counts and never sends reminders.

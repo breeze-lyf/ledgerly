@@ -1,3 +1,4 @@
+import { scanCollections, cashflow } from "./collections.js";
 import "./config.js";
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
@@ -32,6 +33,13 @@ api.get("/health", (_req, res) =>
     toolkit: toolkitHealth,
   }),
 );
+api.get("/collections", (_req, res) => res.json(scanCollections()));
+api.get("/cashflow", (_req, res) => res.json(cashflow()));
+api.post("/collections/run", wrap(async (req: any, res: any) => res.json(await execute("run_collections", {}, req.body.session_id || "default"))));
+if (process.env.COLLECTIONS_AUTO === "1" || process.env.SEED === "1") {
+ const scan = () => console.log("Collections scan:", scanCollections().rows.length, "candidates (no sends)");
+ scan(); setInterval(scan, 6*60*60*1000).unref();
+}
 api.post(
   "/chat",
   wrap(async (req: any, res: any) => {
@@ -102,7 +110,7 @@ api.post("/invoices", wrap(async (req: any, res: any) => {
   for (const date of [a.due_date, a.invoice_date])
     if (date !== undefined && (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date))))
       return res.status(400).json({ error: "Dates must use YYYY-MM-DD" });
-  res.json(await action("create_invoice", a));
+  res.json(await action("create_invoice", a, false, req.body.session_id || "default"));
 }));
 api.post("/invoices/:id/delete", wrap(async (req: any, res: any) => {
   const row = invoice(req.params.id);

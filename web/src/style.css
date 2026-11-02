@@ -787,3 +787,13 @@ button:disabled {
   .dark .mobile-tabs { background: #101923; }
   .chat, .invoices { height: calc(100dvh - 78px); min-height: 440px; }
 }
+
+.stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cashflow-caption { color: var(--muted, #718078); font-size: 12px; margin: -8px 0 22px; }
+.client-risks { padding: 18px 22px; border-bottom: 1px solid #dbe4df; }
+.client-risks > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; font-size: 13px; }
+.client-risks small { color: #718078; font-weight: 400; }
+.risk { border-radius: 20px; padding: 4px 10px; font-size: 11px; text-transform: capitalize; background: #e6f4ec; color: #276446; }
+.risk.medium { background: #fff1d6; color: #845619; }
+.risk.high { background: #fce5df; color: #a33929; }
+@media (max-width: 850px) { .stats { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px 8px; } .cashflow-caption { line-height: 1.6; } }

@@ -40,6 +40,7 @@ type Invoice = {
   timeline?: any[];
 };
 function App() {
+  const [cash, Cash] = useState<any>({});
   const [health, H] = useState<any>({});
   const [loading, Loading] = useState(true);
   const [sideTab, SideTab] = useState("invoices");
@@ -63,6 +64,7 @@ function App() {
     const r = await api("invoices");
     R(r);
     Orders(await api("orders"));
+    Cash(await api("cashflow"));
     Loading(false);
   }
   useEffect(() => {
@@ -202,14 +204,6 @@ function App() {
         <a href={base}>Back to Ledgerly →</a>
       </div>
     );
-  const outstanding = rows.filter((i) =>
-    ["SENT", "PARTIALLY_PAID"].includes(i.status),
-  );
-  const paidRows = rows.filter(
-    (i) =>
-      ["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(i.status) &&
-      i.paid_at?.slice(0, 7) === new Date().toISOString().slice(0, 7),
-  );
   return (
     <div className={dark ? "app dark" : "app"} aria-busy={busy}>
       <header>
@@ -246,44 +240,15 @@ function App() {
             Powered by <b>PayPal</b>
           </span>
         </section>
-        <section className="stats">
-          <div>
-            <span>Outstanding · USD</span>
-            <strong>
-              {money(
-                outstanding
-                  .filter((i) => i.currency === "USD")
-                  .reduce((s, i) => s + i.amount - Number(i.paid_amount || 0), 0),
-              )}
-            </strong>
-            <small>
-              {outstanding.length} open invoices across all currencies
-            </small>
-          </div>
-          <div>
-            <span>Received this month · USD</span>
-            <strong>
-              {money(
-                paidRows
-                  .filter((i) => i.currency === "USD")
-                  .reduce((s, i) => s + Number(i.paid_amount || i.amount), 0),
-              )}
-              <em>↗</em>
-            </strong>
-            <small>{paidRows.length} invoices paid this month</small>
-          </div>
-          <div className="stat-note">
-            <div className="spark">✦</div>
-            <div>
-              <b>Your admin, on autopilot.</b>
-              <p>
-                You do the work.
-                <br />
-                Ledgerly handles the paperwork.
-              </p>
-            </div>
-          </div>
+        <section className="stats" aria-label="Cashflow dashboard">
+          {[
+            ["Outstanding", cash.outstanding, "Open invoice balances"],
+            ["Overdue", cash.overdue_amount, "Follow-up opportunities"],
+            ["Next 7 days", cash.expected_next_7_days, "Expected by due date"],
+            ["Unpaid count", cash.unpaid_count, "Sent, unpaid invoices"],
+          ].map(([label,value,note],n) => <div key={label}><span>{label}{n<3 ? " · USD" : " · USD invoices"}</span><strong>{value === undefined ? "—" : n===3 ? value : money(Number(value))}</strong><small>{note}</small></div>)}
         </section>
+        <p className="cashflow-caption">Local PayPal mirror · Received this month: {money(cash.received_this_month || 0)} USD · Forecasts use invoice due dates.</p>
         <nav className="mobile-tabs" aria-label="Workspace panels">
           <button aria-pressed={panel === "chat"} onClick={() => switchPanel("chat")}>Chat</button>
           <button aria-pressed={panel === "invoices"} onClick={() => switchPanel("invoices")}>Invoices</button>
@@ -334,7 +299,7 @@ function App() {
                           <p>
                             {c.name === "refund"
                               ? `Refund ${c.args.amount || "remaining balance"}`
-                              : `Send ${c.args.invoice_ids?.length || 1} draft invoice(s)`}
+                              : c.name === "remind_invoice" ? `Remind ${c.args.invoice_id} · ${c.args.tone || "friendly"}` : `Send ${c.args.invoice_ids?.length || 1} draft invoice(s)`}
                           </p>
                           <button
                             disabled={busy || completed.includes(c.id)}
@@ -352,6 +317,15 @@ function App() {
                             Cancel
                           </button>
                         </div>
+                      ) : c.kind === "collections" ? (
+                        <div className="chat-card summary" key={j}>
+                          <b>Collections plan · {c.rows.length} candidates</b>
+                          {c.rows.map((r:any) => <p key={r.id}><b>{r.client}</b> · {money(r.outstanding,r.currency)}<br/><small>{r.id} · {r.soon_due ? "Soon due" : `${r.overdue_days} days overdue`} · Proposed tone: {r.tone}{!r.eligible ? " · Follow-up scheduled" : ""}</small></p>)}
+                          {!c.rows.length && <p>No invoices need collecting right now.</p>}
+                          <small>{c.description}</small>
+                        </div>
+                      ) : c.kind === "cashflow" ? (
+                        <div className="chat-card" key={j}><b>Cashflow this month</b>{c.by_currency.map((g:any)=><p key={g.currency}>{g.currency} · Receivables {money(g.receivables_this_month,g.currency)} · Received {money(g.received_this_month,g.currency)}<br/>Overdue {money(g.overdue_amount,g.currency)} · Next 7 days {money(g.expected_next_7_days,g.currency)} · {g.unpaid_count} unpaid</p>)}<small>Client risk is heuristic. Based on the local PayPal mirror.</small></div>
                       ) : c.kind === "summary" ? (
                         <div className="chat-card summary" key={j}>
                           <b>{c.query} invoices</b>
@@ -395,10 +369,11 @@ function App() {
                               cardAction(`invoices/${c.invoice_id}/remind`, {
                                 subject: c.subject,
                                 message: c.body,
+                                tone: c.tone,
                               })
                             }
                           >
-                            Send reminder
+                            Review reminder
                           </button>
                         </div>
                       ) : c.kind === "payment_link" ? (
@@ -448,17 +423,17 @@ function App() {
               <div className="chips">
                 {[
                   "Invoice Acme billing@acme.example $800/month maintenance for 3 months",
-                  "Who hasn't paid this month?",
-                  "Send a reminder to Acme",
-                  "Refund $200 to Acme",
+                  "What needs collecting?",
+                  "Run collections",
+                  "Cashflow this month",
                 ].map((p, n) => (
                   <button key={p} disabled={busy} onClick={() => send(p)}>
                     {
                       [
                         "＋ Invoice Acme",
-                        "◷ Unpaid invoices",
-                        "↗ Remind Acme",
-                        "↶ Refund $200",
+                        "What needs collecting?",
+                        "Run collections",
+                        "Cashflow this month",
                       ][n]
                     }
                   </button>
@@ -495,6 +470,10 @@ function App() {
           </section>
           <aside className="panel invoices">
             <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button></div>
+            <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
+              {cash.by_currency?.flatMap((g:any)=>g.by_client).filter((c:any)=>c.outstanding>0).map((c:any)=><div key={c.client+c.currency} title={c.note}><span>{c.client} <small>{money(c.outstanding,c.currency)}</small></span><span className={"risk "+c.risk}>{c.risk}</span></div>)}
+              {!cash.by_currency?.some((g:any)=>g.by_client.some((c:any)=>c.outstanding>0)) && <p>No outstanding client balances.</p>}
+            </div>
             {sideTab === "invoices" && <>
             <div className="panel-heading">
               <b>

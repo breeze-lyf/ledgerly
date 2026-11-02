@@ -13,6 +13,9 @@ const own = (name: string, properties: any) => ({
 const str = { type: "string" };
 const tools = [
   ...paypalTools,
+  own("run_collections", {}),
+  own("what_needs_collecting", {}),
+  own("cashflow", {}),
   own("refund_order", { order_id: str, amount: { type: "number" } }),
   own("refund_invoice", { client: str, invoice_id: str, amount: { type: "number" } }),
   own("create_invoice_series", {
@@ -54,6 +57,9 @@ function save(session: string, pending: any) {
   );
 }
 function parse(s: string): [string, any] {
+  if (/what needs collecting|collections.*status/i.test(s)) return ["what_needs_collecting", {}];
+  if (/run collections|send overdue reminders/i.test(s)) return ["run_collections", {}];
+  if (/cashflow|cash flow/i.test(s)) return ["cashflow", {}];
   if (/who.*(hasn.?t|not).*paid|unpaid|how much.*paid|overdue/i.test(s))
     return [
       "reconcile",
@@ -261,7 +267,7 @@ export async function chat(message: string, session = "default") {
             {
               role: "system",
               content:
-                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds on an order use refund_order with order_id and optional amount. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
+                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use what_needs_collecting for collections questions, run_collections to propose confirmed reminders, and cashflow for cashflow questions. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds on an order use refund_order with order_id and optional amount. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
             },
             ...history,
           ];

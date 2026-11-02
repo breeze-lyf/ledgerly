@@ -54,6 +54,25 @@ const button = await request(`orders/${order.id}/refund`, { amount: 20 }); asser
 await request(`actions/${button[0].id}/confirm`, {});
 assert.equal((await request('orders')).find(o => o.id === order.id).status, 'REFUNDED');
 console.log('PASS: payment link → approved webhook → idempotent auto-capture → paid payment → confirmed partial refund → button refund → fully refunded');
+const overdueCards=await request('invoices',{client_name:'Collections Smoke',client_email:'collections@example.com',due_date:'2020-01-01',items:[{name:'Services',quantity:1,unit_amount:175}]});
+const overdueInvoice=overdueCards.find(c=>c.status==='DRAFT');
+await request(`actions/${overdueCards.find(c=>c.kind==='pending_action').id}/confirm`,{});
+const collecting=await chat('what needs collecting?');
+assert.ok(collecting.cards.find(c=>c.kind==='collections').rows.some(i=>i.id===overdueInvoice.id && i.tone==='friendly'));
+const plan=await chat('run collections');
+const remind=plan.cards.find(c=>c.kind==='pending_action' && c.args.invoice_id===overdueInvoice.id);
+assert.ok(remind);assert.equal(remind.name,'remind_invoice');
+assert.ok(!(await request('invoices/'+overdueInvoice.id)).timeline.some(e=>e.event_type==='COLLECTIONS.REMINDED'));
+await request(`actions/${remind.id}/confirm`,{});
+const reminded=await request('invoices/'+overdueInvoice.id);
+assert.ok(reminded.timeline.some(e=>e.event_type==='COLLECTIONS.REMINDED'));
+assert.ok(reminded.timeline.some(e=>e.event_type==='PAYPAL.EXECUTED' && JSON.parse(e.data).operation==='remindInvoice'));
+const rescanned=(await request('collections')).rows.find(i=>i.id===overdueInvoice.id);
+assert.equal(rescanned.collections_state.remind_count,1);assert.equal(rescanned.collections_state.last_tone,'friendly');assert.equal(rescanned.eligible,false);
+assert.ok(rescanned.collections_state.last_remind_at && rescanned.collections_state.next_action_at);
+const cash=await request('cashflow');assert.ok(cash.overdue_amount>=175);assert.ok(cash.by_client.some(c=>c.client==='Collections Smoke' && c.risk==='high'));
+assert.ok((await chat('Cashflow this month')).cards.some(c=>c.kind==='cashflow'));
+console.log('PASS: overdue candidate → collections proposal → explicit confirmation → mock PayPal reminder → persisted history and cooldown → cashflow risk');
 const history=await request('messages?session_id='+session_id);assert.ok(history.some(m=>m.traces?.length));
 console.log('PASS: toolkit health → draft series → confirm send → payment → reconciliation → partial refund → over-refund rejected → clarification → confirmed send → reminder tones → persisted history');
 JS
