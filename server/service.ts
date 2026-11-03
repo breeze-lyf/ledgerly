@@ -430,6 +430,10 @@ export async function action(
     await paypal.cancelInvoice(i.paypal_id);
     status = "CANCELLED";
   } else if (name === "record_payment") {
+    if (i.status === "DRAFT")
+      throw Error(`Invoice ${i.id} is still a draft. Send the invoice first, then record the payment.`);
+    if (!["SENT", "PARTIALLY_PAID"].includes(i.status))
+      throw Error(`Invoice ${i.id} is ${i.status}; payments can only be recorded on sent, unpaid invoices.`);
     await paypal.recordPayment(i.paypal_id, {
       method: "CASH",
       type: "EXTERNAL",
