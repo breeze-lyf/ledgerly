@@ -20,13 +20,14 @@ import { payInfo, createPayOrder, capturePayOrder, syncInvoices, lastSync, payLi
 import { retainers, retainer, syncRetainer, retainerWebhook, simulatedRetainerEvent, retainerEventTypes } from "./subscriptions.js";
 import { createMcpServer, pendingMcpActions, MCP_SESSION } from "./mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { mountFinance } from "./finance/routes.js";
 import { policy, setPolicy, runAutopilot, activity, outcomes, approvals, approve, scheduleAutopilot } from "./autopilot.js";
 if (mock && process.env.SEED_ON_START === "1") {
   const { seed } = await import("./seed.js");
   await seed();
 }
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "1mb", verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
 const api = express.Router();
 const wrap = (fn: any) => (req: any, res: any, next: any) =>
   Promise.resolve(fn(req, res)).catch(next);
@@ -39,6 +40,7 @@ api.get("/health", (_req, res) =>
   }),
 );
 api.get("/collections", (_req, res) => res.json(scanCollections()));
+mountFinance(api);
 // Client pay page (public): PayPal JS SDK buttons create/capture an Orders v2 order tied to the invoice.
 api.get("/pay/:ref", (req, res) => { try { res.json(payInfo(req.params.ref)); } catch (e: any) { res.status(404).json({ error: e.message }); } });
 api.post("/pay/:ref/order", wrap(async (req: any, res: any) => res.json(await createPayOrder(req.params.ref))));
