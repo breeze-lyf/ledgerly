@@ -190,8 +190,11 @@ function App() {
     return (
       <div className="checkout">
         <div className="brand">
-          ◈ Ledgerly <span>× PayPal</span>
+          <img className="logo-img" src={base + "ledgerly-mark.svg"} alt="" width={35} height={35} /> Ledgerly <span>× PayPal</span>
         </div>
+        {paid && (
+          <img className="paid-seal" src={base + "ledgerly-seal.svg"} alt="Paid" width={120} height={120} />
+        )}
         <h1>
           A little payment.
           <br />A big thank you.
@@ -221,7 +224,7 @@ function App() {
     <div className={dark ? "app dark" : "app"} aria-busy={busy}>
       <header>
         <a className="brand" href={base}>
-          <span className="logo">↗</span> Ledgerly
+          <img className="logo-img" src={base + "ledgerly-mark.svg"} alt="" width={35} height={35} /> Ledgerly
           <span className="beta">EARLY ACCESS</span>
         </a>
         <div className="header-right">

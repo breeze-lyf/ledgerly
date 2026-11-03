@@ -1,3 +1,5 @@
+<p><img src="docs/brand/ledgerly-horizontal.svg" alt="Ledgerly" height="56"></p>
+
 # Ledgerly
 
 **Good work deserves to get paid.** Ledgerly is a conversational invoicing workspace for freelancers and small studios. Create a monthly invoice series, review before sending, track payments, reconcile outstanding balances, and follow up with a reminder in one place.
