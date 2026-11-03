@@ -1,14 +1,14 @@
-# Ledgerly demo — 2 minutes 45 seconds
+# Ledgerly demo — target 2:40 (must be < 3:00)
 
-Record the local mock workspace with seeded data. Keep the mock badge visible; do not imply a simulated payment moved money. Use desktop framing and briefly show mobile tabs.
+Record https://ledgerly.yufeng.fun/ (PayPal sandbox). Ensure the LLM badge shows "LLM" (fix LLM key first). Cut loading. AI voiceover OK. No copyrighted music.
 
-| Time | On-screen action | Voiceover |
+| Time | On-screen | Voiceover |
 | --- | --- | --- |
-| 0:00–0:15 | Show Ledgerly chat, seeded invoices, and dashboard. | “Freelancers should spend more time doing good work and less time chasing payment. Ledgerly brings invoicing and follow-up into one conversation.” |
-| 0:15–0:40 | Click Invoice Acme suggestion. Show three $800 drafts and toolkit chips. | “Ask for three months of maintenance. Ledgerly uses PayPal Agent Toolkit tool definitions to turn the request into structured financial actions. Here we are using the local mock executor.” |
-| 0:40–0:58 | Pause on review card, then click Confirm. Point to System badge and sent invoices. | “Creating a draft does not send it. I review the series and confirm. This deterministic action is labeled System, so the interface makes the decision clear.” |
-| 0:58–1:20 | Open a sent invoice. Click Simulate paid. Show PAID timeline entry. | “In sandbox, verified PayPal webhooks update the invoice. This mock payment exercises the same event pipeline locally. The activity timeline and live dashboard update together.” |
-| 1:20–1:42 | Ask “Who hasn't paid this month?” Show table and totals. | “Now I can reconcile outstanding invoices without piecing together a spreadsheet. Ledgerly groups totals by currency and explains which drafts are excluded.” |
-| 1:42–2:03 | Ask “Refund $200 to [paid invoice ID]”. Pause on review, confirm, reopen detail. | “Refunds also require confirmation. A partial refund preserves the payment history and tracks the balance that can still be refunded.” |
-| 2:03–2:25 | Ask “Draft a firm reminder for Umbrella Design”. Show subject, body, Send reminder button. | “For overdue work, I can draft a firm follow-up. Ledgerly includes the amount, due date, and days overdue. I decide when to send it.” |
-| 2:25–2:45 | Show mobile Chat/Invoices tabs, then final workspace. | “The same workflow works on mobile. PayPal APIs handle financial operations, the toolkit supplies tools, and an optional language model interprets intent. Ledgerly keeps the paperwork moving, with the person in control.” |
+| 0:00–0:15 | Workspace + cashflow strip | "Freelancers lose hours chasing payments. Ledgerly is a chat-native PayPal invoicing agent for them." |
+| 0:15–0:45 | Type "Invoice Acme $800/month maintenance for 3 months"; show toolkit chips + review card | "An AI model picks PayPal Agent Toolkit tools and creates real PayPal sandbox draft invoices. Nothing is sent yet." |
+| 0:45–1:00 | Confirm; status SENT | "I confirm, and PayPal Invoicing sends them." |
+| 1:00–1:25 | Open invoice, Remind → confirm; Record payment → PAID, timeline | "Reminders, payments and verified PayPal webhooks all land on one live timeline." |
+| 1:25–1:55 | "What needs collecting?" → "Run collections" → confirm a firm reminder | "The collections agent escalates friendly, firm, final — and asks before every send." |
+| 1:55–2:15 | "Cashflow this month" + dashboard | "Cashflow: outstanding, overdue, next seven days, client risk." |
+| 2:15–2:35 | "Refund $50 to <id>" → confirm → PARTIALLY_REFUNDED | "Refunds check remaining balance and need confirmation." |
+| 2:35–2:45 | Mobile tabs, end card with URL + repo | "PayPal moves the money, AI does the paperwork, you stay in control." |

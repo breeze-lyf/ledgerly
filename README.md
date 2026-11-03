@@ -4,6 +4,40 @@
 
 ![Ledgerly workspace](docs/screenshots/desktop-chat.png)
 
+**Live demo (PayPal sandbox, no login):** https://ledgerly.yufeng.fun/ — no real money moves.
+
+## For judges: try it in 2 minutes
+
+1. Open https://ledgerly.yufeng.fun/ (PayPal **sandbox** mode).
+2. Type `Invoice Globex $250 for logo design, billing@globex-example.com` → a real PayPal sandbox draft invoice appears with a review card. Click **Confirm** to send it through PayPal Invoicing.
+3. Open the invoice → **Remind** (confirm) → type `Record payment $250 for <invoice id>` → status becomes **PAID**, timeline updates live (SSE + verified PayPal webhooks).
+4. Ask `What needs collecting?`, `Run collections`, `Cashflow this month`, `Who hasn't paid this month?`.
+5. Ask `Refund $50 to <invoice id>` → confirm → **PARTIALLY_REFUNDED** with remaining balance.
+
+Or run locally in mock mode (no credentials) with the Quickstart below, or in sandbox mode with your own free PayPal sandbox app (`PAYPAL_MODE=sandbox`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`).
+
+## PayPal APIs used
+
+| API | Used for |
+| --- | --- |
+| OAuth 2.0 `/v1/oauth2/token` | Cached access token |
+| Invoicing v2 | next invoice number, create draft, get/list, send, remind, cancel, record payment, record refund, delete draft |
+| Orders v2 | payment link (approve URL), get order, capture approved orders |
+| Payments v2 | refund a capture (full/partial) |
+| Webhooks | `verify-webhook-signature`; INVOICING.INVOICE.PAID/CANCELLED/REFUNDED, PAYMENT.CAPTURE.COMPLETED/REFUNDED |
+| **PayPal Agent Toolkit** (`@paypal/agent-toolkit` 1.11.0) | 13 invoice/order/refund tool schemas given to the LLM; optional toolkit execution in sandbox |
+
+## How AI is used
+
+- An OpenAI-compatible LLM (tool calling, up to 5 rounds) reads natural-language requests and picks PayPal Agent Toolkit tools plus Ledgerly tools (`create_invoice_series`, `draft_reminder`, `reconcile`, `refund_invoice`, `ask_clarification`).
+- The **Collections agent** scans overdue/near-due invoices and proposes friendly → firm → final reminders with escalation by age and reminder count.
+- Safety: every send/remind/refund is a pending action requiring explicit confirmation; arguments are validated server-side; each reply is labeled **LLM**, **fallback**, or **System**.
+- If the LLM is unreachable, a deterministic parser keeps the same flows working (shown with a notice).
+
+## Built during the hackathon
+
+All code was written from scratch starting 2026-11-01 (see git history), within the submission period.
+
 ## How it works
 
 Ledgerly uses PayPal Invoicing, Orders, Payments, and Refunds APIs through a shared client interface. The PayPal Agent Toolkit supplies the financial tool schemas shown to the assistant. Ledgerly validates tool arguments, resolves client references, and gates invoice sending and refunds behind explicit confirmation. Toolkit chips show the selected tool and executor; they do not imply that a mock operation contacted PayPal.
