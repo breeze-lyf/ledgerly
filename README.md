@@ -29,7 +29,8 @@ Or run locally in mock mode (no credentials) with the Quickstart below, or in sa
 
 ## How AI is used
 
-- An OpenAI-compatible LLM (tool calling, up to 5 rounds) reads natural-language requests and picks PayPal Agent Toolkit tools plus Ledgerly tools (`create_invoice_series`, `draft_reminder`, `reconcile`, `refund_invoice`, `ask_clarification`).
+- An OpenAI-compatible LLM (tool calling, up to 5 rounds) reads natural-language requests and picks PayPal Agent Toolkit tools plus 9 Ledgerly tools (`run_collections`, `what_needs_collecting`, `cashflow`, `refund_order`, `refund_invoice`, `create_invoice_series`, `draft_reminder`, `reconcile`, `ask_clarification`).
+- **Autopilot collections** (off by default) sends LLM-written, fact-checked reminders under guardrails: per-run/per-day/per-invoice caps, quiet hours in the client's time zone, minimum days between reminders, and a dollar threshold above which a human must approve. Every decision is in the Agent Activity log.
 - The **Collections agent** scans overdue/near-due invoices and proposes friendly → firm → final reminders with escalation by age and reminder count.
 - Safety: every send/remind/refund is a pending action requiring explicit confirmation; arguments are validated server-side; each reply is labeled **LLM**, **fallback**, or **System**.
 - If the LLM is unreachable, a deterministic parser keeps the same flows working (shown with a notice).
@@ -58,6 +59,44 @@ flowchart LR
     API --> SSE[SSE updates]
     SSE --> UI
 ```
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U[Freelancer UI<br/>React + SSE] -->|chat / actions| API[Express API]
+  C[Client pay page<br/>/pay/:ref<br/>PayPal JS SDK] -->|create / capture order| API
+  API --> AG[Agent: LLM tool calling<br/>PayPal Agent Toolkit + 9 Ledgerly tools]
+  API --> AP[Autopilot scheduler<br/>guardrails + approvals]
+  AP --> LLM[(LLM: reminder writer)]
+  AG --> LLM
+  AG & AP & API --> PP[PayPal sandbox<br/>Invoicing v2 · Orders v2 · Payments v2]
+  PP -->|webhooks, signature-verified| WH[/api/webhooks/paypal/]
+  WH --> DB[(SQLite: invoices, settlements,<br/>events, agent_activity)]
+  SY[Sync job every 5 min] -->|pull status| PP
+  SY --> DB
+  API --> DB
+  DB -->|SSE /api/stream| U
+```
+
+## What's real in sandbox
+
+| Piece | Status |
+|---|---|
+| Invoice create / send / remind / cancel (Invoicing v2) | Real PayPal sandbox calls |
+| Client pay page button (JS SDK, Orders v2 create + capture) | Real; buyer logs in with a sandbox personal account |
+| Capture → invoice marked PAID on PayPal | Real (payment recorded on the PayPal invoice) |
+| Refunds of pay-page payments (Payments v2 capture refund) | Real |
+| Webhooks (capture completed/denied/refunded, invoice paid/cancelled/refunded) | Real, signature-verified, idempotent |
+| Status sync fallback | Real, pulls from PayPal every 5 min |
+| Autopilot reminders | Real sandbox reminders; text by LLM, template fallback |
+| Outcomes panel | Computed only from recorded events, no synthetic numbers |
+| Money movement | Sandbox only — no real funds |
+
+## AI tools used
+
+- **In the product:** an OpenAI-compatible LLM (Zhipu GLM in our deployment) for tool calling and reminder writing; PayPal Agent Toolkit 1.11.0 for tool schemas.
+- **While building:** AI coding assistants (Cursor agents) for code, tests, and docs; all changes reviewed and committed by the author.
 
 ## Features
 
