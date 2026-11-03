@@ -21,7 +21,7 @@ function findCapture(captureId: string): { proj: Project; milestone_id?: string 
 }
 
 export function pdf(lines: string[]) {
-  const esc = (s: string) => s.replace(/[^\x20-\x7e]/g, "?").replace(/([()\\])/g, "\\$1");
+  const esc = (s: string) => s.replace(/[\u00b7\u2014\u2013]/g, "-").replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/[^\x20-\x7e]/g, "?").replace(/([()\\])/g, "\\$1");
   const pages: string[][] = []; for (let i = 0; i < lines.length; i += 48) pages.push(lines.slice(i, i + 48));
   const objs: string[] = ["<</Type/Catalog/Pages 2 0 R>>", "", "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"];
   const kids: number[] = [];
@@ -33,7 +33,7 @@ export function pdf(lines: string[]) {
   }
   objs[1] = `<</Type/Pages/Kids[${kids.map(k => k + " 0 R").join(" ")}]/Count ${kids.length}>>`;
   let out = "%PDF-1.4\n"; const offs: number[] = [];
-  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj${o}endobj\n`; });
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
   const x = out.length;
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map(o => String(o).padStart(10, "0") + " 00000 n \n").join("") + `trailer<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${x}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
