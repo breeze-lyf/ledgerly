@@ -6,6 +6,7 @@ import { base } from "../config.js";
 import { object, saveObject } from "../db.js";
 import { paypal } from "../paypal/index.js";
 import { holdRemaining, plans, resume, runners, savePlan } from "./plans.js";
+import { onDispute } from "./disputes.js";
 import { feLog, money, project, projects, saveProject, type Project } from "./store.js";
 
 const DAY = 864e5;
@@ -65,6 +66,14 @@ runners.capture_hold = async (s, plan, proj) => {
   return { status: c.status === "COMPLETED" ? "done" : "waiting", result: { capture_id: c.id, capture_status: c.status, final_capture: final } };
 };
 
+// Hold-first clients: create the funding request (hold order) and return the client link; nothing is captured.
+runners.request_hold = async (_s, _plan, proj) => {
+  const fresh = project(proj.id)!;
+  if (fresh.hold) return { status: "done", result: { already: fresh.hold.status } };
+  const o = await createHoldOrder(proj.id);
+  return { status: "done", result: { order_id: o.id, funding_link: absolute(`hold/${proj.id}`) } };
+};
+
 // Split → PayPal Payouts. Guardrails: recipient must be a configured split; total payouts ≤ 90% of money received.
 runners.payout = async (s, plan, proj) => {
   if (s.result?.payout_batch_id) return { status: "done", result: s.result };
@@ -122,6 +131,7 @@ export async function financeWebhook(e: any) {
     if (p) await authorizeHold(p.id, r.id);
     return true;
   }
+  if (t.startsWith("CUSTOMER.DISPUTE.")) return onDispute(e);
   if (t.startsWith("PAYMENT.AUTHORIZATION.")) {
     const p = projects().find(x => x.hold?.authorization_id === r.id);
     if (p && t === "PAYMENT.AUTHORIZATION.VOIDED" && p.hold.status === "active") { p.hold.status = "voided"; saveProject(p); feLog(p.id, "hold", "PayPal reports the hold was voided."); }

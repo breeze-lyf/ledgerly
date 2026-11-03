@@ -168,4 +168,56 @@ const { runners } = await import("../server/finance/plans.js");
 await assert.rejects(runners.capture_hold!({ id: "s1", type: "capture_hold", amount: 99999, label: "", status: "pending" }, { id: "plan_x", milestone_id: "m1", steps: [] } as any, project("prj_hold")!), /no active PayPal hold|exceeds/);
 await assert.rejects(runners.payout!({ id: "p9", type: "payout", amount: 10, to: "stranger@example.com", label: "", status: "pending" }, { id: "plan_y", milestone_id: "m1", steps: [] } as any, project("prj_hold")!), /not a configured split/);
 console.log("day 4 money flow + payouts tests passed");
+
+// --- Day 5: dispute defense + client memory ---
+const { learn } = await import("../server/finance/memory.js");
+const capId = project("prj_hold")!.hold.captures[0].id;
+assert.equal(learn("finance@contoso.example").strategy, "standard");
+const dispute = { id: "WH-D1", event_type: "CUSTOMER.DISPUTE.CREATED", resource: { dispute_id: "PP-D-1", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", status: "OPEN", dispute_amount: { currency_code: "USD", value: "800.00" }, disputed_transactions: [{ seller_transaction_id: capId }] } };
+assert.equal(await money4.financeWebhook(dispute), true);
+const dp = plans("pending").find(p => p.kind === "dispute")!;
+assert.ok(dp, "defense card created"); assert.equal(dp.milestone_id, "dispute:PP-D-1");
+assert.equal(dp.evidence.length, 2, "PR + client approval for the disputed milestone");
+assert.equal(dp.steps[0].status, "done");
+const pdfRes = await fetch(`http://127.0.0.1:${port}/api/finance/disputes/PP-D-1/evidence.pdf`);
+const pdfText = Buffer.from(await pdfRes.arrayBuffer()).toString("latin1");
+assert.equal(pdfRes.headers.get("content-type"), "application/pdf"); assert.match(pdfText, /^%PDF-1\.4/); assert.match(pdfText, /The API looks great, approved/); assert.match(pdfText, /Captured 800\.00 USD for milestone m1/);
+assert.equal(await money4.financeWebhook({ ...dispute, id: "WH-D2", event_type: "CUSTOMER.DISPUTE.UPDATED" }), true);
+assert.equal(plans().filter(p => p.kind === "dispute").length, 1, "updates don't duplicate the defense");
+delete process.env.DISPUTE_SUBMIT;
+const dpd = await decide(dp.id, "approve");
+assert.equal(dpd.steps[1].status, "skipped", "submission stays behind the flag"); assert.equal(dpd.status, "executed");
+assert.equal(object("evidence-submitted:PP-D-1"), undefined, "nothing sent to PayPal with the flag off");
+// With the flag on (mock), the same plan type submits multipart evidence.
+await money4.financeWebhook({ ...dispute, id: "WH-D3", resource: { ...dispute.resource, dispute_id: "PP-D-2", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" } });
+process.env.DISPUTE_SUBMIT = "1";
+const dp2 = plans("pending").find(p => p.milestone_id === "dispute:PP-D-2")!;
+assert.equal(dp2.dispute.evidence_type, "PROOF_OF_FULFILLMENT");
+assert.equal((await decide(dp2.id, "approve")).steps[1].status, "done");
+assert.equal(object("evidence-submitted:PP-D-2").input.evidences[0].evidence_type, "PROOF_OF_FULFILLMENT");
+delete process.env.DISPUTE_SUBMIT;
+// Unknown captures are not ours.
+assert.equal(await money4.financeWebhook({ ...dispute, id: "WH-D4", resource: { ...dispute.resource, dispute_id: "PP-D-X", disputed_transactions: [{ seller_transaction_id: "CAP-unknown" }] } }), false);
+// Memory: the dispute flips Contoso to hold-first, and the next plan asks for funds up front.
+const memC = learn("finance@contoso.example");
+assert.equal(memC.strategy, "hold_first"); assert.equal(memC.require_hold, true); assert.equal(memC.max_discount_pct, 0);
+createProject({ id: "prj_c2", client: "Contoso Labs", client_email: "finance@contoso.example", repo: "demo-org/contoso-phase2", title: "Contoso phase 2", sow: "", milestones: [{ id: "a", title: "Alpha", amount: 300, keywords: ["alpha"] }, { id: "b", title: "Beta", amount: 300, keywords: ["beta"] }] });
+const prA = { action: "closed", repository: { full_name: "demo-org/contoso-phase2" }, pull_request: { number: 1, merged: true, title: "Alpha build", body: "", user: { login: "dev-demo" }, html_url: "", merged_at: new Date().toISOString(), labels: [] } };
+await post("/intake/github", prA, { "x-github-event": "pull_request", "x-hub-signature-256": sign(prA) });
+const ca = (await post("/intake/email", { message_id: "<ca>", from: "finance@contoso.example", subject: "Alpha", text: "Alpha looks good, approved" }, { authorization: "Bearer test-intake-token" })).json.plans[0];
+assert.deepEqual(ca.steps.map((s: any) => s.type), ["invoice", "request_hold", "evidence_pack"]);
+assert.equal(ca.memory.strategy, "hold_first"); assert.equal(ca.memory.terms_days, 3);
+const caDone = await decide(ca.id, "approve");
+assert.ok(caDone.steps[1].result.order_id, "funding request created"); assert.equal(project("prj_c2")!.hold.status, "created");
+assert.equal(invoice(caDone.steps[0].result.invoice_id).due_date, new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10));
+// A fast payer becomes trusted (net-15, discount room, no hold).
+const { action } = await import("../server/service.js");
+for (const n of [1, 2]) {
+  const [i] = await action("create_invoice", { client_name: "Fast Co", client_email: "ap@fast.example", due_in_days: 14, items: [{ name: "Work", quantity: 1, unit_amount: 100 * n }] }, false, "t5");
+  await action("send_invoice", { invoice_id: i.id }, true, "t5");
+  const o = await createPayOrder(i.id); saveObject({ ...object(o.id), status: "APPROVED" }); await capturePayOrder(i.id, o.id);
+}
+const memF = learn("ap@fast.example");
+assert.equal(memF.strategy, "trusted", JSON.stringify(memF)); assert.equal(memF.terms_days, 15); assert.equal(memF.require_hold, false);
+console.log("day 5 dispute defense + client memory tests passed");
 server.close();

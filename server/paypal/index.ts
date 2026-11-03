@@ -30,6 +30,7 @@ export interface PayPalClient {
   voidAuthorization(id: string): Promise<any>;
   createPayout(body: Body, requestId: string): Promise<any>;
   getPayout(batchId: string): Promise<any>;
+  provideDisputeEvidence(id: string, input: Body, file: Buffer, filename: string): Promise<any>;
 }
 export class SandboxPayPalClient implements PayPalClient {
   private token = "";
@@ -185,6 +186,15 @@ export class SandboxPayPalClient implements PayPalClient {
   }
   getPayout(batchId: string) {
     return this.request("/v1/payments/payouts/" + encodeURIComponent(batchId));
+  }
+  async provideDisputeEvidence(id: string, input: Body, file: Buffer, filename: string) {
+    const fd = new FormData();
+    fd.append("input", new Blob([JSON.stringify(input)], { type: "application/json" }));
+    fd.append("file1", new Blob([new Uint8Array(file)], { type: "application/pdf" }), filename);
+    const r = await fetch(paypalApiBase + `/v1/customer/disputes/${encodeURIComponent(id)}/provide-evidence`, { method: "POST", headers: { Authorization: "Bearer " + (await this.getAccessToken()) }, body: fd });
+    const t = await r.text(); const d = t ? JSON.parse(t) : {};
+    if (!r.ok) throw Error(`PayPal ${r.status}: ${JSON.stringify(d)}`);
+    return d;
   }
 }
 export class MockPayPalClient implements PayPalClient {
@@ -353,6 +363,7 @@ export class MockPayPalClient implements PayPalClient {
     return { batch_header: batch.batch_header };
   }
   async getPayout(batchId: string) { return this.get(batchId); }
+  async provideDisputeEvidence(id: string, input: Body) { return saveObject({ id: "evidence-submitted:" + id, input, links: [{ rel: "self" }] }); }
 }
 export const directPayPal: PayPalClient = mock
   ? new MockPayPalClient()

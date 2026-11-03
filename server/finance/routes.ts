@@ -4,6 +4,8 @@ import { ingestEmail, ingestGithub, verifyGithubSignature, verifyIntakeToken } f
 import { createProject, feActivity, project, projects, signals } from "./store.js";
 import { decide, plan, plans, scanProject } from "./plans.js";
 import "./invoice-step.js";
+import { memories } from "./memory.js";
+import { onDispute } from "./disputes.js";
 import { authorizeHold, createHoldOrder, holdInfo, reauthorizeDue, voidHold } from "./money.js";
 import { object } from "../db.js";
 
@@ -43,5 +45,14 @@ export function mountFinance(api: Router, extra?: (api: Router) => void) {
   api.post("/finance/projects/:id/hold/void", wrap(async (req: any, res: any) => { try { res.json(await voidHold(req.params.id)); } catch (e) { bad(res, e); } }));
   api.post("/finance/reauthorize-due", wrap(async (_req: any, res: any) => res.json(await reauthorizeDue())));
   if (process.env.FINANCE_SWEEP !== "0") setInterval(() => reauthorizeDue().catch(e => console.error("reauth sweep", e.message)), 3600_000).unref();
+  api.get("/finance/memory", (_req, res) => res.json(memories()));
+  api.get("/finance/disputes/:id/evidence.pdf", (req, res) => { const f = object("fe-dispute-pdf:" + req.params.id); if (!f) return res.sendStatus(404); res.type("application/pdf").send(Buffer.from(f.b64, "base64")); });
+  // Demo tool: simulate PayPal's CUSTOMER.DISPUTE.CREATED for a real capture (the sandbox needs a buyer account to open one).
+  api.post("/dev/finance-dispute", wrap(async (req: any, res: any) => {
+    if (!mock && process.env.DEMO_TOOLS !== "1") return res.sendStatus(404);
+    const cap = String(req.body?.capture_id || ""); const id = "PP-D-SIM-" + Date.now();
+    const ok = await onDispute({ id: "WH-SIM-" + id, event_type: "CUSTOMER.DISPUTE.CREATED", resource: { dispute_id: id, reason: req.body?.reason || "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", status: "OPEN", simulated: true, dispute_amount: req.body?.amount || { currency_code: "USD", value: "800.00" }, disputed_transactions: [{ seller_transaction_id: cap }] } });
+    ok ? res.json({ dispute_id: id, simulated: true }) : res.status(404).json({ error: "capture not linked to a project" });
+  }));
   extra?.(api);
 }

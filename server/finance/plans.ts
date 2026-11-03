@@ -2,10 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { db } from "../db.js";
 import { detect, type Detection } from "./detector.js";
+import { learn } from "./memory.js";
 import { feLog, markSignals, money, project, saveProject, signal, signals, type Project } from "./store.js";
 
-export type Step = { id: string; type: "capture_hold" | "invoice" | "payout" | "evidence_pack"; label: string; amount?: number; to?: string; final?: boolean; status: "pending" | "done" | "failed" | "waiting" | "skipped"; result?: any; error?: string };
-export type Plan = { id: string; project_id: string; milestone_id: string; status: "pending" | "approved" | "executed" | "failed" | "rejected"; headline: string; detection: Detection; evidence: any[]; steps: Step[]; created_at: string; updated_at: string };
+export type Step = { id: string; type: "capture_hold" | "invoice" | "payout" | "evidence_pack" | "submit_evidence" | "request_hold"; label: string; amount?: number; to?: string; final?: boolean; status: "pending" | "done" | "failed" | "waiting" | "skipped"; result?: any; error?: string };
+export type Plan = { kind?: "milestone" | "dispute"; dispute?: any; memory?: any; id: string; project_id: string; milestone_id: string; status: "pending" | "approved" | "executed" | "failed" | "rejected"; headline: string; detection: Detection; evidence: any[]; steps: Step[]; created_at: string; updated_at: string };
 
 const now = () => new Date().toISOString();
 const row2plan = (r: any): Plan | undefined => r && { ...JSON.parse(r.data), id: r.id, project_id: r.project_id, milestone_id: r.milestone_id, status: r.status, created_at: r.created_at, updated_at: r.updated_at };
@@ -22,13 +23,16 @@ type Runner = (s: Step, p: Plan, proj: Project) => Promise<{ status: Step["statu
 export const runners: Partial<Record<Step["type"], Runner>> = {};
 export function holdRemaining(proj: Project) { return proj.hold?.status === "active" ? money(proj.hold.amount - proj.hold.captured) : 0; }
 
-export function buildSteps(proj: Project, milestoneId: string): Step[] {
+export function buildSteps(proj: Project, milestoneId: string, mem?: { require_hold?: boolean; strategy?: string }): Step[] {
   const m = proj.milestones.find(x => x.id === milestoneId)!;
   const steps: Step[] = [];
   const remaining = holdRemaining(proj);
+  const rest = proj.milestones.filter(x => x.status === "open" && x.id !== m.id).reduce((a, x) => a + x.amount, 0);
   const lastOpen = proj.milestones.filter(x => x.status !== "released" && x.id !== m.id).length === 0;
   if (remaining + 0.001 >= m.amount) steps.push({ id: "s1", type: "capture_hold", amount: m.amount, final: lastOpen || remaining - m.amount < 0.01, label: `Capture ${m.amount.toFixed(2)} ${proj.currency} of the ${remaining.toFixed(2)} held at PayPal`, status: "pending" });
   else steps.push({ id: "s1", type: "invoice", amount: m.amount, label: `Send a PayPal invoice for ${m.amount.toFixed(2)} ${proj.currency} to ${proj.client_email}`, status: "pending" });
+  // Memory: a hold-first client funds the remaining milestones before more work starts.
+  if (mem?.require_hold && !proj.hold && rest > 0) steps.push({ id: "h1", type: "request_hold", amount: money(rest), label: `Client memory says hold-first: ask ${proj.client} to fund the remaining ${money(rest).toFixed(2)} ${proj.currency} at PayPal before the next milestone`, status: "pending" });
   proj.splits.forEach((s, i) => {
     const amt = money(m.amount * s.percent / 100);
     steps.push({ id: `p${i + 1}`, type: "payout", amount: amt, to: s.email, label: `Pay ${s.name} ${s.percent}% (${amt.toFixed(2)} ${proj.currency}) via PayPal Payouts${steps[0].type === "invoice" ? " once the invoice is paid" : ""}`, status: "pending" });
@@ -47,7 +51,9 @@ export async function scanProject(projectId: string) {
     const m = proj.milestones.find(x => x.id === d.milestone_id)!;
     if (db.prepare("SELECT 1 FROM fe_plans WHERE project_id=? AND milestone_id=? AND status IN ('pending','approved','executed')").get(projectId, m.id)) continue;
     const evidence = [...d.delivery, ...d.approval].map(id => signal(id)).filter(Boolean).map(s => ({ id: s!.id, source: s!.source, kind: s!.kind, title: s!.title, actor: s!.actor, at: s!.occurred_at, url: s!.url, excerpt: s!.body.slice(0, 280) }));
-    const p = savePlan({ id: "plan_" + randomUUID().slice(0, 8), project_id: projectId, milestone_id: m.id, status: "pending", headline: `Milestone "${m.title}" looks delivered and approved`, detection: d, evidence, steps: buildSteps(proj, m.id), created_at: now(), updated_at: now() });
+    const mem = learn(proj.client_email);
+    const p = savePlan({ id: "plan_" + randomUUID().slice(0, 8), kind: "milestone", project_id: projectId, milestone_id: m.id, status: "pending", headline: `Milestone "${m.title}" looks delivered and approved`, detection: d, evidence,
+      memory: { strategy: mem.strategy, why: mem.why, terms_days: mem.terms_days, avg_days_to_pay: mem.avg_days_to_pay }, steps: buildSteps(proj, m.id, mem), created_at: now(), updated_at: now() });
     m.status = "proposed"; saveProject(proj);
     markSignals([...d.delivery, ...d.approval], "used");
     feLog(projectId, "plan", `Proposed: ${p.headline} (${Math.round(d.confidence * 100)}% confident, ${d.method})`, { plan_id: p.id });
@@ -62,7 +68,7 @@ export async function runSteps(p: Plan) {
     if (s.status === "done" || s.status === "skipped") continue;
     if (s.type === "payout" && p.steps.some(x => (x.type === "capture_hold" || x.type === "invoice") && x.status !== "done")) { s.status = "waiting"; continue; }
     try {
-      const run = s.type === "evidence_pack" ? evidencePack : runners[s.type];
+      const run = s.type === "evidence_pack" && p.kind !== "dispute" ? evidencePack : runners[s.type];
       if (!run) throw Error(`${s.type} is not available`);
       const r = await run(s, p, proj);
       s.status = r.status; s.result = r.result; s.error = undefined;
@@ -74,7 +80,7 @@ export async function runSteps(p: Plan) {
     }
   }
   p.status = p.steps.some(s => s.status === "failed") ? "failed" : p.steps.every(s => s.status === "done" || s.status === "skipped") ? "executed" : "approved";
-  if (p.status === "executed") { const m = proj.milestones.find(x => x.id === p.milestone_id); const fresh = project(p.project_id)!; const fm = fresh.milestones.find(x => x.id === p.milestone_id); if (m && fm) { fm.status = "released"; saveProject(fresh); } }
+  if (p.status === "executed" && p.kind !== "dispute") { const m = proj.milestones.find(x => x.id === p.milestone_id); const fresh = project(p.project_id)!; const fm = fresh.milestones.find(x => x.id === p.milestone_id); if (m && fm) { fm.status = "released"; saveProject(fresh); } }
   return savePlan(p);
 }
 
