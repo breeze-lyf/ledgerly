@@ -3,6 +3,7 @@ import { mock } from "./config.js";
 import { randomUUID } from "node:crypto";
 import { db, invoice, invoices, object, saveObject, order } from "./db.js";
 import { paypal } from "./paypal/index.js";
+import { settleInvoiceCapture, invoiceForCapture, payLinkFor, payLink } from "./lifecycle.js";
 export const listeners = new Set<(event: any) => void>();
 export function event(id: string, type: string, data: any = {}) {
   const e = {
@@ -368,6 +369,7 @@ export async function action(
             ? "PARTIALLY_REFUNDED"
             : "REFUNDED",
       });
+    if (r?.id) saveObject({ id: "refund:" + r.id, applied: true });
     event(a.capture_id, "CAPTURE.REFUNDED", r);
     if (a.invoice_id) {
       const i = resolve(a.invoice_id);
@@ -413,17 +415,18 @@ export async function action(
   if (name === "send_invoice") {
     if (i.status !== "DRAFT") throw Error("Only draft invoices can be sent");
     if (!i.email) throw Error("Client email required before sending");
-    await paypal.sendInvoice(i.paypal_id);
+    await paypal.sendInvoice(i.paypal_id, { send_to_recipient: true, subject: `Invoice from ${process.env.MERCHANT_NAME || "Ledgerly"}`,
+      note: `Pay securely with PayPal: ${payLinkFor(i)}` });
     status = "SENT";
   } else if (name === "remind_invoice") {
     if (!unpaid(i)) throw Error("Send the invoice before reminding");
     await paypal.remindInvoice(i.paypal_id, {
       subject: a.subject || "Payment reminder",
-      note: a.message || "A friendly reminder about your invoice.",
+      note: `${a.message || "A friendly reminder about your invoice."}\n\nPay securely with PayPal: ${payLinkFor(i)}`.slice(0, 4000),
       send_to_recipient: true,
     });
     recordReminder(i.id, a.tone);
-    event(i.id, "COLLECTIONS.REMINDED", {tone:a.tone || "friendly", message:a.message});
+    event(i.id, "COLLECTIONS.REMINDED", {tone:a.tone || "friendly", message:a.message, pay_link: payLinkFor(i), by: a.by || "human"});
   } else if (name === "cancel_invoice") {
     if (!["DRAFT", "SENT", "PARTIALLY_PAID"].includes(i.status))
       throw Error("This invoice cannot be cancelled");
@@ -539,6 +542,8 @@ export async function captureApproved(id: string) {
       db.prepare("INSERT OR IGNORE INTO payments(id,order_id,amount,currency,status) VALUES (?,?,?,?,?)").run(c.id, id, Number(c.amount.value), c.amount.currency_code, "CAPTURED");
     })();
     event(id, "PAYMENT.CAPTURED", { capture_id: c.id });
+    const linked = order(id)?.invoice_id;
+    if (linked) await settleInvoiceCapture(linked, c, "pay page capture");
     if (mock) await webhook({ id: "WH-COMPLETED-" + c.id, event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { ...c, supplementary_data: { related_ids: { order_id: id } } } });
   })();
   capturing.set(id, work);
@@ -552,6 +557,29 @@ export async function webhook(e: any) {
     return;
   }
   const r = e.resource;
+  // Captures/refunds that belong to a pay-page invoice are applied idempotently to that invoice.
+  if (e.event_type.startsWith("PAYMENT.CAPTURE.")) {
+    const linked = invoiceForCapture(r);
+    if (linked) {
+      const fresh = db.prepare("INSERT OR IGNORE INTO events (id,invoice_id,event_type,data) VALUES (?,?,?,?)").run(e.id, linked, e.event_type, JSON.stringify(e));
+      if (!fresh.changes) return;
+      if (e.event_type === "PAYMENT.CAPTURE.COMPLETED") await settleInvoiceCapture(linked, r, "webhook");
+      if (e.event_type === "PAYMENT.CAPTURE.DENIED") {
+        db.prepare("UPDATE invoices SET status='SENT' WHERE id=? AND status IN ('PAYMENT_PENDING','SENT')").run(linked);
+        event(linked, "PAYMENT.DENIED", { capture_id: r.id, reason: r.status_details?.reason });
+      }
+      if (e.event_type === "PAYMENT.CAPTURE.REFUNDED" && !object("refund:" + r.id)) {
+        saveObject({ id: "refund:" + r.id, applied: true });
+        const i = invoice(linked);
+        const refunded = Math.round((Number(i.refunded || 0) + Number(r.amount?.value || 0)) * 100) / 100;
+        const status = refunded + 0.001 >= (Number(i.paid_amount) || i.amount) ? "REFUNDED" : "PARTIALLY_REFUNDED";
+        db.prepare("UPDATE invoices SET refunded=?,status=? WHERE id=?").run(refunded, status, linked);
+        event(linked, "REFUND.CONFIRMED_BY_PAYPAL", { refund_id: r.id, amount: Number(r.amount?.value || 0) });
+      }
+      for (const fn of listeners) fn({ ...e, invoice_id: linked });
+      return;
+    }
+  }
   let id = r.invoice?.id || r.invoice_id || r.id;
   const related = r.supplementary_data?.related_ids;
   if (!invoice(id) && related?.order_id) id = related.order_id;
@@ -631,7 +659,7 @@ export async function invoicePayload(a: any, dueDate: string) {
       invoice_number: generated.invoice_number,
       currency_code: currency,
       invoice_date: a.invoice_date || localDate(),
-      ...(a.note ? { note: a.note } : {}),
+      note: [a.note, `Pay online with PayPal: ${payLink(generated.invoice_number)}`].filter(Boolean).join("\n\n"),
       payment_term: a.payment_term === "NET_10" ? { term_type: "NET_10" } : { term_type: "DUE_ON_DATE_SPECIFIED", due_date: dueDate },
     },
     invoicer: { email_address: process.env.PAYPAL_SANDBOX_BUSINESS_EMAIL || (mock ? "merchant@example.com" : undefined) },

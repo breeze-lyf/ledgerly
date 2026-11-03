@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS paypal_objects (id TEXT PRIMARY KEY,data TEXT);`);
 export function invoices() {
   return db
     .prepare(
-      `SELECT invoices.*, (SELECT MAX(created_at) FROM events WHERE invoice_id=invoices.id AND event_type IN ('INVOICING.INVOICE.PAID','RECORD_PAYMENT')) AS paid_at FROM invoices ORDER BY created_at DESC,rowid DESC`,
+      `SELECT invoices.*, (SELECT MAX(created_at) FROM events WHERE invoice_id=invoices.id AND event_type IN ('INVOICING.INVOICE.PAID','RECORD_PAYMENT','INVOICE.PAID_VIA_PAYPAL','SYNC.PAID')) AS paid_at FROM invoices ORDER BY created_at DESC,rowid DESC`,
     )
     .all() as any[];
 }
