@@ -38,6 +38,14 @@ await webhook(refund); await webhook({ ...refund, id: "WH-4" });
 assert.equal(invoice(a.id).refunded, 50);
 assert.equal(invoice(a.id).status, "PARTIALLY_REFUNDED");
 await assert.rejects(createPayOrder(a.id), /nothing to pay/);
+// 4b. Refunding a pay-page invoice refunds the real PayPal capture, and late invoice webhooks don't clobber partial state.
+await action("refund", { invoice_id: a.id, amount: 20 }, true, "t");
+assert.equal(invoice(a.id).refunded, 70);
+assert.ok(db.prepare("SELECT 1 FROM events WHERE invoice_id=? AND event_type='CAPTURE.REFUNDED'").get(capId));
+await webhook({ id: "WH-R1", event_type: "INVOICING.INVOICE.REFUNDED", resource: { id: a.id, status: "REFUNDED" } });
+await webhook({ id: "WH-P1", event_type: "INVOICING.INVOICE.PAID", resource: { id: a.id, status: "PAID" } });
+assert.equal(invoice(a.id).status, "PARTIALLY_REFUNDED");
+assert.equal(invoice(a.id).paid_amount, 250);
 // 5. Denied capture keeps invoice payable.
 const b = await newInvoice("Denied Co", 80, 3);
 const ob = await createPayOrder(b.id);

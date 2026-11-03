@@ -128,6 +128,11 @@ export async function action(
   confirmed = false,
   session = "default",
 ): Promise<any[]> {
+  // Invoices paid through the pay page refund real money via the PayPal capture.
+  if (name === "refund" && a.invoice_id && !a.capture_id) {
+    const s = db.prepare("SELECT capture_id FROM settlements WHERE invoice_id=(SELECT id FROM invoices WHERE id=? OR paypal_id=?) ORDER BY rowid DESC").get(a.invoice_id, a.invoice_id) as any;
+    if (s) a = { ...a, capture_id: s.capture_id };
+  }
   if (name === "refund_order" || (name === "refund" && a.order_id && !a.capture_id)) {
     const o = order(a.order_id);
     if (!o?.capture_id) throw Error("Order has no captured payment");
@@ -595,9 +600,14 @@ export async function webhook(e: any) {
     db.prepare(
       "INSERT INTO events (id,invoice_id,event_type,data) VALUES (?,?,?,?)",
     ).run(e.id, id, e.event_type, JSON.stringify(e));
-    if (status)
+    const current = invoice(id);
+    let next: string | undefined = status;
+    // Never downgrade a locally tracked refund state; a partial refund stays partial.
+    if (current && status === "PAID" && ["PARTIALLY_REFUNDED", "REFUNDED"].includes(current.status)) next = undefined;
+    if (current && status === "REFUNDED" && Number(current.refunded || 0) > 0 && Number(current.refunded) + 0.001 < (Number(current.paid_amount) || current.amount)) next = "PARTIALLY_REFUNDED";
+    if (next)
       db.prepare("UPDATE invoices SET status=? WHERE id=? OR paypal_id=?").run(
-        status,
+        next,
         id,
         id,
       );
@@ -609,7 +619,7 @@ export async function webhook(e: any) {
     db.prepare("INSERT INTO payments(id,order_id,amount,currency,status) VALUES (?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET status=CASE WHEN payments.refunded>0 THEN payments.status ELSE 'PAID' END").run(r.id, id, o.amount, o.currency, "PAID");
   }
   if (e.event_type === "CHECKOUT.ORDER.APPROVED") await captureApproved(r.id);
-  if (status === "PAID") {
+  if (status === "PAID" && !["PARTIALLY_REFUNDED", "REFUNDED"].includes(invoice(id)?.status)) {
     db.prepare("UPDATE invoices SET paid_amount=amount WHERE id=?").run(id);
     const i = invoice(id);
     if (i) {
