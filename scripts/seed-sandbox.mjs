@@ -39,7 +39,7 @@ if (args.includes('--clean')) {
 } else {
   if (state.invoices.length) throw Error('Manifest already contains invoices; archive it after cleanup before reseeding');
   const date = days => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-  const clients = ['Northwind Studio', 'Lumen Coffee Co.', 'Atlas Robotics', 'Bluebird Bakery', 'Orbit Media', 'Pine & Co. Architects'];
+  const clients = ['Northwind Studio', 'Lumen Coffee Co.', 'Atlas Robotics', 'Bluebird Bakery', 'Nimbus Kite Media', 'Pine & Co. Architects'];
   for (let n = 0; n < clients.length; n++) {
     const body = { client_name: clients[n], client_email: `demo${n + 1}@example.com`, currency: 'USD', note: tag,
       items: [{ name: `${tag}: freelance services`, quantity: 1, unit_amount: 600 + n * 175 }], due_date: date(n === 4 ? -5 : 14) };
