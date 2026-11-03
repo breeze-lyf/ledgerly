@@ -44,7 +44,7 @@ function App() {
   const [cash, Cash] = useState<any>({});
   const [health, H] = useState<any>({});
   const [loading, Loading] = useState(true);
-  const [sideTab, SideTab] = useState("invoices");
+  const [sideTab, SideTab] = useState("finance");
   const [orders, Orders] = useState<any[]>([]);
   const [rows, R] = useState<Invoice[]>([]);
   const [selected, S] = useState<Invoice | null>(null);
@@ -249,8 +249,8 @@ function App() {
         <section className="intro">
           <div>
             <div className="eyebrow">YOUR FREELANCE FINANCES, SIMPLIFIED</div>
-            <h1>Good work deserves to get paid.</h1>
-            <p>Create, track, and follow up on invoices. Just ask.</p>
+            <h1>Your finance employee already did the work.</h1>
+            <p>Ledgerly watches GitHub and your inbox, bills delivered work, pays your team and defends disputes on PayPal. You just approve.</p>
           </div>
           <span className="powered">
             Powered by <b>PayPal</b>
@@ -269,9 +269,9 @@ function App() {
         {toast && <div className="toast" role="status">{toast}</div>}
         <nav className="mobile-tabs" aria-label="Workspace panels">
           <button aria-pressed={panel === "chat"} onClick={() => switchPanel("chat")}>Chat</button>
-          <button aria-pressed={panel === "invoices"} onClick={() => switchPanel("invoices")}>Invoices</button>
+          <button aria-pressed={panel === "invoices"} onClick={() => switchPanel("invoices")}>{sideTab === "finance" ? "Finance employee" : "Invoices"}</button>
         </nav>
-        <div className={"workspace show-" + panel}>
+        <div className={"workspace show-" + panel + (sideTab === "finance" ? " fe-hero" : "")}>
           <section className="chat panel">
             <div className="panel-heading">
               <div>
@@ -501,11 +501,11 @@ function App() {
             </div>
           </section>
           <aside className="panel invoices">
-            <div className="panel-heading actions"><button aria-pressed={sideTab === "finance"} onClick={() => SideTab("finance")}>Finance employee</button><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button><button aria-pressed={sideTab === "retainers"} onClick={() => SideTab("retainers")}>Retainers</button></div>
-            <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
+            <nav className="tabbar" role="tablist">{([["finance", "✦ Finance employee"], ["invoices", "Invoices"], ["orders", "Payments"], ["autopilot", "Autopilot"], ["retainers", "Retainers"]] as const).map(([k, l]) => <button key={k} role="tab" aria-selected={sideTab === k} className={sideTab === k ? "on" : ""} onClick={() => SideTab(k)}>{l}</button>)}</nav>
+            {sideTab !== "finance" && <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
               {cash.by_currency?.flatMap((g:any)=>g.by_client).filter((c:any)=>c.outstanding>0).map((c:any)=><div key={c.client+c.currency} title={c.note}><span>{c.client} <small>{money(c.outstanding,c.currency)}</small></span><span className={"risk "+c.risk}>{c.risk}</span></div>)}
               {!cash.by_currency?.some((g:any)=>g.by_client.some((c:any)=>c.outstanding>0)) && <p>No outstanding client balances.</p>}
-            </div>
+            </div>}
             {sideTab === "invoices" && <>
             <div className="panel-heading">
               <b>

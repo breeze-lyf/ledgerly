@@ -871,3 +871,44 @@ button:disabled {
 .finance .plan-steps li.done span{color:#1a7f37}.finance .plan-steps li.failed span{color:#c62828}.finance .plan-steps li.waiting span{color:#b26a00}
 .finance .activity{list-style:none;padding:0;font-size:.9em}.finance .activity li{padding:2px 0}
 .paycard .milestones{list-style:none;padding:0;margin:10px 0}.paycard .milestones li{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #e3e3e8}
+
+/* Tab bar: one scrollable row, never cramped */
+.tabbar{display:flex;gap:4px;padding:10px 14px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+.tabbar::-webkit-scrollbar{display:none}
+.tabbar button{flex:0 0 auto;border:0;background:transparent;color:var(--muted);font-size:13px;font-weight:600;padding:8px 12px;border-radius:999px;cursor:pointer}
+.tabbar button:hover{background:rgba(0,112,224,.07);color:var(--ink)}
+.tabbar button.on{background:#0B1B3F;color:#fff}
+.dark .tabbar button.on{background:#0070E0}
+/* Finance employee as the hero */
+.finance .colleague{display:flex;gap:12px;align-items:center;padding:14px;border-radius:14px;background:linear-gradient(135deg,#0B1B3F,#0f3a7a);color:#fff;margin-bottom:12px}
+.finance .colleague .muted{color:#b9c8e6;margin:2px 0 0}
+.finance .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#12B76A;margin-right:6px;box-shadow:0 0 0 0 rgba(18,183,106,.6);animation:pulse 1.8s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 8px rgba(18,183,106,0)}100%{box-shadow:0 0 0 0 rgba(18,183,106,0)}}
+.finance .week{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:4px}
+.finance .week div{border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column}
+.finance .week b{font-size:17px}.finance .week span{font-size:11px;color:var(--muted)}
+.finance .tiny,.tiny{font-size:11px}
+.finance h4{display:flex;align-items:center;gap:6px;margin:18px 0 8px}
+.finance .count{background:#0070E0;color:#fff;border-radius:999px;font-size:11px;padding:1px 7px}
+.finance .plan-card{position:relative}
+.finance .plan-card.dispute.pending{border-color:#b26a00;box-shadow:0 0 0 3px rgba(178,106,0,.12)}
+.finance .plan-card .seal{position:absolute;right:10px;bottom:10px;opacity:.9;transform:rotate(-12deg)}
+.finance .plan-card.executed{opacity:.85}
+.finance .memory-chip{font-size:12px;padding:6px 10px;border-radius:8px;background:#eef5ff}
+.finance .memory-chip.hold_first{background:#fff4e5}.finance .memory-chip.trusted{background:#e9f8ef}
+.dark .finance .memory-chip{background:#14233a}
+.finance .feed{list-style:none;padding:0;margin:0;border-left:2px solid var(--line);margin-left:10px}
+.finance .feed li{display:flex;gap:10px;padding:6px 0 6px 0;margin-left:-11px}
+.finance .feed .ic{width:20px;height:20px;flex:0 0 20px;display:grid;place-items:center;font-size:12px;background:var(--card,#fff);border-radius:50%}
+.finance .feed small{color:var(--muted);text-transform:uppercase;font-size:10px;letter-spacing:.04em}
+.finance .feed p{margin:1px 0 0;font-size:13px}
+.finance .projects{list-style:none;padding:0}.finance .projects>li{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.finance .nego{margin:8px 0;display:flex;flex-direction:column;gap:4px}
+.finance .nego p{margin:3px 0;padding:6px 10px;border-radius:10px;font-size:12px;max-width:90%}
+.finance .nego .them{background:#f1f3f6}.finance .nego .us{background:#e8f1ff;margin-left:auto}
+.dark .finance .nego .them{background:#1b2533}.dark .finance .nego .us{background:#14233a}
+.finance .projects code{word-break:break-all}
+@media (max-width:600px){.finance .week{grid-template-columns:repeat(2,1fr)}}
+.workspace.fe-hero{grid-template-columns:minmax(300px,.8fr) minmax(0,1.5fr)}
+@media (max-width:850px){.workspace.fe-hero{grid-template-columns:1fr}}
+.tabbar{mask-image:linear-gradient(90deg,#000 92%,transparent)}

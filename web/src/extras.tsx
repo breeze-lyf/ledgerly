@@ -188,33 +188,72 @@ export function RetainersPanel({ tick, onError, onCards }: { tick: number; onErr
 }
 
 /** Finance employee: multi-step approval cards proposed from GitHub + email signals. */
+const KIND: Record<string, [string, string]> = { signal: ["👀", "noticed"], plan: ["🧠", "decided"], decision: ["✅", "you approved"], step: ["⚡", "did"], hold: ["🔒", "funds"], payout: ["💸", "paid out"],
+  dispute: ["🛡️", "defended"], memory: ["📒", "learned"], negotiation: ["🤝", "negotiated"], project: ["📁", "set up"], error: ["⚠️", "needs help"] };
 export function FinancePanel({ tick, onError }: { tick: number; onError: (m: string) => void }) {
   const [plans, setPlans] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [log, setLog] = useState<any[]>([]);
+  const [week, setWeek] = useState<any>(null);
+  const [nego, setNego] = useState<Record<string, any>>({});
+  const [token, setToken] = useState<{ id: string; token: string } | null>(null);
   const [busy, setBusy] = useState("");
-  const load = () => Promise.all([api("finance/plans"), api("finance/projects"), api("finance/activity")]).then(([p, j, a]) => { setPlans(p); setProjects(j); setLog(a); }).catch((e) => onError(e.message));
+  const load = () => Promise.all([api("finance/plans"), api("finance/projects"), api("finance/activity"), api("finance/weekly")]).then(async ([p, j, a, w]) => {
+    setPlans(p); setProjects(j); setLog(a); setWeek(w);
+    const n = await Promise.all(j.map((x: any) => api("finance/projects/" + x.id + "/negotiation").catch(() => null)));
+    setNego(Object.fromEntries(j.map((x: any, i: number) => [x.id, n[i]])));
+  }).catch((e) => onError(e.message));
   useEffect(() => { load(); }, [tick]);
   const decide = async (id: string, decision: string) => { setBusy(id); try { await api("finance/plans/" + id, { decision }); } catch (e: any) { onError(e.message); } setBusy(""); load(); };
+  const issue = async (id: string) => { try { setToken({ id, ...(await api("finance/projects/" + id + "/client-token", {})) }); } catch (e: any) { onError(e.message); } };
   const icon: Record<string, string> = { done: "✓", waiting: "…", failed: "✕", pending: "○", skipped: "–" };
   const cur = (pid: string) => projects.find((p) => p.id === pid)?.currency || "USD";
+  const pending = plans.filter((p) => p.status === "pending" || p.status === "failed");
+  const done = plans.filter((p) => p.status === "executed").slice(0, 4);
+  const total = (p: any) => p.kind === "dispute" ? `${p.dispute?.amount?.value} ${p.dispute?.amount?.currency_code}` : money(p.steps.filter((s: any) => s.type === "capture_hold" || s.type === "invoice").reduce((a: number, s: any) => a + (s.amount || 0), 0), cur(p.project_id));
+  const card = (p: any) => <div key={p.id} className={"plan-card " + p.status + (p.kind === "dispute" ? " dispute" : "")}>
+    {p.status === "executed" && <img className="seal" src={base + "ledgerly-seal.svg"} alt="Done" width={64} height={64} />}
+    <div className="plan-head"><strong>{p.kind === "dispute" ? "🛡️ " : ""}{p.headline}</strong><span className="badge">{p.status === "pending" ? "needs your OK" : p.status}</span></div>
+    <p className="muted">{projects.find((x) => x.id === p.project_id)?.title} · {Math.round(p.detection.confidence * 100)}% confident ({p.detection.method === "llm" ? "AI + rules" : "rules"})</p>
+    <p>{p.detection.rationale}</p>
+    {p.memory && <p className={"memory-chip " + p.memory.strategy}>📒 {p.memory.strategy === "trusted" ? "Trusted payer" : p.memory.strategy === "hold_first" ? "Hold-first client" : "Standard terms"} · {p.memory.why} · net-{p.memory.terms_days}</p>}
+    {p.kind === "dispute" && <p><a href={base + "api/finance/disputes/" + p.dispute.id + "/evidence.pdf"} target="_blank" rel="noreferrer">📄 Open the evidence pack (PDF)</a></p>}
+    <details><summary>Evidence I used ({p.evidence.length})</summary><ul>{p.evidence.map((e: any) => <li key={e.id}>{e.source === "github" ? "GitHub" : "Email"} · {e.title} <span className="muted">{e.actor} · {when(e.at)}</span>{e.url && <> · <a href={e.url} target="_blank" rel="noreferrer">open</a></>}</li>)}</ul></details>
+    <ol className="plan-steps">{p.steps.map((s: any) => <li key={s.id} className={s.status}><span>{icon[s.status] || "○"}</span> {s.label}{s.result?.funding_link && <> · <a href={s.result.funding_link} target="_blank" rel="noreferrer">funding link</a></>}{s.error && <em className="error"> — {s.error}</em>}</li>)}</ol>
+    {(p.status === "pending" || p.status === "failed") && <div className="actions">
+      <button className="primary" disabled={busy === p.id} onClick={() => decide(p.id, "approve")}>{p.status === "failed" ? "Retry" : p.kind === "dispute" ? "Approve defense" : `Approve all · ${total(p)}`}</button>
+      {p.status === "pending" && <button disabled={busy === p.id} onClick={() => decide(p.id, "reject")}>Reject</button>}
+    </div>}
+  </div>;
+  const last = log[0];
   return <div className="details finance">
-    {plans.length === 0 && <p className="muted">Nothing to approve. Ledgerly is watching GitHub and your inbox for delivered, client-approved work.</p>}
-    {plans.map((p) => <div key={p.id} className={"plan-card " + p.status}>
-      <div className="plan-head"><strong>{p.headline}</strong><span className="badge">{p.status}</span></div>
-      <p className="muted">{projects.find((x) => x.id === p.project_id)?.title} · {Math.round(p.detection.confidence * 100)}% confident ({p.detection.method})</p>
-      <p>{p.detection.rationale}</p>
-      <details><summary>Evidence ({p.evidence.length})</summary><ul>{p.evidence.map((e: any) => <li key={e.id}>{e.source === "github" ? "GitHub" : "Email"} · {e.title} <span className="muted">{e.actor} · {when(e.at)}</span>{e.url && <> · <a href={e.url} target="_blank" rel="noreferrer">open</a></>}</li>)}</ul></details>
-      <ol className="plan-steps">{p.steps.map((s: any) => <li key={s.id} className={s.status}><span>{icon[s.status] || "○"}</span> {s.label}{s.error && <em className="error"> — {s.error}</em>}</li>)}</ol>
-      {(p.status === "pending" || p.status === "failed") && <div className="actions">
-        <button className="primary" disabled={busy === p.id} onClick={() => decide(p.id, "approve")}>{p.status === "failed" ? "Retry" : `Approve all (${money(p.steps[0]?.amount, cur(p.project_id))})`}</button>
-        {p.status === "pending" && <button disabled={busy === p.id} onClick={() => decide(p.id, "reject")}>Reject</button>}
-      </div>}
-    </div>)}
+    <section className="colleague">
+      <img src={base + "ledgerly-mark.svg"} alt="" width={44} height={44} />
+      <div><strong>Ledgerly, your finance employee</strong>
+        <p className="muted"><span className="live-dot" />Watching {projects.filter((p) => p.repo).length} repos and your inbox{last ? ` · last acted ${when(last.created_at)}` : ""}</p></div>
+    </section>
+    {week && <section className="week" title={week.assumption.note}>
+      <div><b>{Object.entries(week.collected).map(([c, v]) => money(v as number, c)).join(" + ") || money(0, "USD")}</b><span>collected this week</span></div>
+      <div><b>{week.ai_actions}</b><span>actions I took</span></div>
+      <div><b>{week.human_approvals}</b><span>times you clicked</span></div>
+      <div><b>{week.hours_saved} h*</b><span>saved (est.)</span></div>
+    </section>}
+    {week && <p className="muted tiny">* Estimate: {Object.entries(week.assumption.minutes_per_action).filter(([, m]) => (m as number) > 0).map(([k, m]) => `${k.replace(/_/g, " ")} ${m}m`).join(", ")}. Our assumption, not measured.</p>}
+    <h4>Needs your OK {pending.length > 0 && <span className="count">{pending.length}</span>}</h4>
+    {pending.length === 0 && <p className="muted">Nothing to approve. I'm watching GitHub and your inbox for delivered, client-approved work.</p>}
+    {pending.map(card)}
+    <h4>What I noticed and did</h4>
+    <ol className="feed">{log.slice(0, 20).map((l) => { const [ic, verb] = KIND[l.kind] || ["•", l.kind]; return <li key={l.id} className={"k-" + l.kind}><span className="ic">{ic}</span><div><small>{verb} · {when(l.created_at)}</small><p>{l.message}</p></div></li>; })}</ol>
+    {done.length > 0 && <><h4>Done</h4>{done.map(card)}</>}
     <h4>Projects</h4>
-    <ul className="activity">{projects.map((j) => <li key={j.id}><strong>{j.title}</strong> · {j.client} · {j.milestones.filter((m: any) => m.status === "released").length}/{j.milestones.length} milestones released · {j.hold?.status === "active" ? `${money(j.hold.amount - j.hold.captured, j.currency)} held at PayPal` : j.hold?.status ? `hold ${j.hold.status}` : <a href={base + "hold/" + j.id} target="_blank" rel="noreferrer">client funding link</a>}</li>)}</ul>
-    <h4>What Ledgerly noticed</h4>
-    <ul className="activity">{log.slice(0, 15).map((l) => <li key={l.id}><span className="muted">{when(l.created_at)}</span> {l.message}</li>)}</ul>
+    <ul className="projects">{projects.map((j) => <li key={j.id}>
+      <div><strong>{j.title}</strong> · {j.client} · {j.milestones.filter((m: any) => m.status === "released").length}/{j.milestones.length} milestones released · {j.hold?.status === "active" ? `${money(j.hold.amount - j.hold.captured, j.currency)} held at PayPal` : j.hold?.status ? `hold ${j.hold.status}` : <a href={base + "hold/" + j.id} target="_blank" rel="noreferrer">client funding link</a>}</div>
+      {nego[j.id]?.rounds?.length > 0 && <div className="nego"><small>🤝 Agent-to-agent terms {nego[j.id].status === "agreed" ? "· agreed" : ""}</small>
+        {nego[j.id].rounds.map((r: any) => <div key={r.offer_id}><p className="them">Client's agent: {r.ask.discount_pct}% off, {r.ask.deposit_pct}% held, net-{r.ask.net_days}{r.note ? ` — “${r.note}”` : ""}</p>
+          <p className="us">Ledgerly: {r.reply.decision === "accepted" ? "Accepted" : "Counter"}: {r.reply.terms.discount_pct}% off, {r.reply.terms.deposit_pct}% held, net-{r.reply.terms.net_days}{r.reply.reasons.length ? ` (${r.reply.reasons.join("; ")})` : ""}</p></div>)}</div>}
+      <button className="secondary" onClick={() => issue(j.id)}>Let the client's agent negotiate</button>
+      {token?.id === j.id && <p className="tiny">Give this to the client's agent (MCP at <code>/mcp/client</code>): <code>{token!.token}</code></p>}
+    </li>)}</ul>
   </div>;
 }
 
