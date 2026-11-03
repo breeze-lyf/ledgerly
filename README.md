@@ -13,6 +13,8 @@
 3. Open the invoice → **Remind** (confirm) → type `Record payment $250 for <invoice id>` → status becomes **PAID**, timeline updates live (SSE + verified PayPal webhooks).
 4. Ask `What needs collecting?`, `Run collections`, `Cashflow this month`, `Who hasn't paid this month?`.
 5. Ask `Refund $50 to <invoice id>` → confirm → **PARTIALLY_REFUNDED** with remaining balance.
+6. Ask `Bill Acme $800/month for 3 months` → choose **Retainer subscription** → confirm → a real PayPal Product, Plan and Subscription are created and you get the client approval link (Retainers tab).
+7. Connect any MCP client to Ledgerly (see [MCP server](#mcp-server)) and ask it what needs collecting.
 
 Or run locally in mock mode (no credentials) with the Quickstart below, or in sandbox mode with your own free PayPal sandbox app (`PAYPAL_MODE=sandbox`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`).
 
@@ -24,12 +26,18 @@ Or run locally in mock mode (no credentials) with the Quickstart below, or in sa
 | Invoicing v2 | next invoice number, create draft, get/list, send, remind, cancel, record payment, record refund, delete draft |
 | Orders v2 | payment link (approve URL), get order, capture approved orders |
 | Payments v2 | refund a capture (full/partial) |
-| Webhooks | `verify-webhook-signature`; INVOICING.INVOICE.PAID/CANCELLED/REFUNDED, PAYMENT.CAPTURE.COMPLETED/REFUNDED |
-| **PayPal Agent Toolkit** (`@paypal/agent-toolkit` 1.11.0) | 13 invoice/order/refund tool schemas given to the LLM; optional toolkit execution in sandbox |
+| Catalog Products v1 | one SERVICE product per retainer |
+| Billing Plans + Subscriptions v1 | monthly plan with N cycles, subscription with client approval link, get (sync), cancel |
+| Disputes v1, Transaction Search v1 | read-only, through the Agent Toolkit (`list_disputes`, `get_dispute`, `list_transactions`) |
+| Webhooks | `verify-webhook-signature`; INVOICING.INVOICE.PAID/CANCELLED/REFUNDED, PAYMENT.CAPTURE.COMPLETED/DENIED/REFUNDED, CHECKOUT.ORDER.APPROVED, BILLING.SUBSCRIPTION.ACTIVATED/CANCELLED/SUSPENDED/EXPIRED/PAYMENT.FAILED, PAYMENT.SALE.COMPLETED |
+| JS SDK | Smart Payment Buttons on the client pay page |
+| **PayPal Agent Toolkit** (`@paypal/agent-toolkit` 1.11.0) | 17 tool schemas given to the LLM: 13 invoice/order/refund tools plus 4 read-only tools from the disputes, transactions and subscriptions groups; optional toolkit execution in sandbox |
 
 ## How AI is used
 
-- An OpenAI-compatible LLM (tool calling, up to 5 rounds) reads natural-language requests and picks PayPal Agent Toolkit tools plus 9 Ledgerly tools (`run_collections`, `what_needs_collecting`, `cashflow`, `refund_order`, `refund_invoice`, `create_invoice_series`, `draft_reminder`, `reconcile`, `ask_clarification`).
+- An OpenAI-compatible LLM (tool calling, up to 5 rounds) reads natural-language requests and picks PayPal Agent Toolkit tools plus 12 Ledgerly tools (`run_collections`, `what_needs_collecting`, `cashflow`, `refund_order`, `refund_invoice`, `create_invoice_series`, `draft_reminder`, `reconcile`, `ask_clarification`, `create_retainer`, `cancel_retainer`, `list_retainers`).
+- **Retainers:** for "$X/month for N months" the agent offers a PayPal subscription (client approves once, auto-billed monthly) or an invoice series. Creating or cancelling a subscription is a pending action you confirm.
+- **MCP server:** 15 Ledgerly tools for outside agents (Claude Desktop, Cursor, any MCP client). Reads are direct; anything that moves money is only proposed and waits in the Autopilot tab under *External agent approvals*.
 - **Autopilot collections** (off by default) sends LLM-written, fact-checked reminders under guardrails: per-run/per-day/per-invoice caps, quiet hours in the client's time zone, minimum days between reminders, and a dollar threshold above which a human must approve. Every decision is in the Agent Activity log.
 - The **Collections agent** scans overdue/near-due invoices and proposes friendly → firm → final reminders with escalation by age and reminder count.
 - Safety: every send/remind/refund is a pending action requiring explicit confirmation; arguments are validated server-side; each reply is labeled **LLM**, **fallback**, or **System**.
@@ -66,11 +74,12 @@ flowchart LR
 flowchart LR
   U[Freelancer UI<br/>React + SSE] -->|chat / actions| API[Express API]
   C[Client pay page<br/>/pay/:ref<br/>PayPal JS SDK] -->|create / capture order| API
-  API --> AG[Agent: LLM tool calling<br/>PayPal Agent Toolkit + 9 Ledgerly tools]
+  API --> AG[Agent: LLM tool calling<br/>17 Agent Toolkit + 12 Ledgerly tools]
   API --> AP[Autopilot scheduler<br/>guardrails + approvals]
   AP --> LLM[(LLM: reminder writer)]
   AG --> LLM
-  AG & AP & API --> PP[PayPal sandbox<br/>Invoicing v2 · Orders v2 · Payments v2]
+  X[External agents<br/>MCP stdio / HTTP] -->|15 tools, proposals only| API
+  AG & AP & API --> PP[PayPal sandbox<br/>Invoicing v2 · Orders v2 · Payments v2<br/>Subscriptions v1 · Disputes · Transactions]
   PP -->|webhooks, signature-verified| WH[/api/webhooks/paypal/]
   WH --> DB[(SQLite: invoices, settlements,<br/>events, agent_activity)]
   SY[Sync job every 5 min] -->|pull status| PP
@@ -91,12 +100,28 @@ flowchart LR
 | Status sync fallback | Real, pulls from PayPal every 5 min |
 | Autopilot reminders | Real sandbox reminders; text by LLM, template fallback |
 | Outcomes panel | Computed only from recorded events, no synthetic numbers |
+| Retainers (Products, Plans, Subscriptions v1) | Real sandbox calls; client approval needs a sandbox buyer login |
+| Subscription webhooks (activated, payment completed/failed, cancelled) | Real, signature-verified, idempotent by event id |
+| Disputes / transaction search | Real read-only toolkit calls |
+| MCP server | Real; stdio locally, HTTP at `/mcp` only when `MCP_TOKEN` is set |
 | Money movement | Sandbox only — no real funds |
 
 ## AI tools used
 
 - **In the product:** an OpenAI-compatible LLM (Zhipu GLM in our deployment) for tool calling and reminder writing; PayPal Agent Toolkit 1.11.0 for tool schemas.
 - **While building:** AI coding assistants (Cursor agents) for code, tests, and docs; all changes reviewed and committed by the author.
+
+## MCP server
+
+Ledgerly exposes 15 tools over the Model Context Protocol: `what_needs_collecting`, `cashflow`, `reconcile`, `list_invoices`, `get_invoice`, `get_pay_link`, `outcomes`, `autopilot_status`, `list_retainers`, `list_pending_approvals` (read-only), and `create_invoice_series`, `draft_reminder`, `propose_collections_run`, `propose_refund`, `propose_retainer`. The last group only creates drafts or pending actions; a human confirms in **Autopilot → External agent approvals**.
+
+Local (stdio), e.g. Claude Desktop / Cursor `mcpServers` entry:
+
+```json
+{ "ledgerly": { "command": "npm", "args": ["run", "-s", "mcp"], "cwd": "/path/to/ledgerly" } }
+```
+
+Remote (Streamable HTTP): set `MCP_TOKEN` on the server, then point a client at `https://<host>/mcp` with `Authorization: Bearer <MCP_TOKEN>`. Without `MCP_TOKEN` the endpoint returns 404.
 
 ## Features
 
