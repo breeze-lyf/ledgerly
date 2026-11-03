@@ -19,7 +19,9 @@
     "sandbox:e2e": "node scripts/sandbox-e2e.mjs",
     "webhook:register": "node scripts/register-webhook.mjs",
     "webhook:simulate": "node scripts/simulate-webhook.mjs",
-    "test:orders": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: tsx scripts/order-tests.ts"
+    "test:orders": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: tsx scripts/order-tests.ts",
+    "test:lifecycle": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/lifecycle-tests.ts",
+    "test": "npm run test:orders && npm run test:lifecycle"
   },
   "dependencies": {
     "@paypal/agent-toolkit": "1.11.0",

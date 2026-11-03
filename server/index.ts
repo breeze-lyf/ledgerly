@@ -16,6 +16,8 @@ import {
 } from "./service.js";
 import { toolkitHealth, execute } from "./agent/toolkit.js";
 import { chat } from "./agent/index.js";
+import { payInfo, createPayOrder, capturePayOrder, syncInvoices, lastSync, payLinkFor } from "./lifecycle.js";
+import { policy, setPolicy, runAutopilot, activity, outcomes, approvals, approve, scheduleAutopilot } from "./autopilot.js";
 if (mock && process.env.SEED_ON_START === "1") {
   const { seed } = await import("./seed.js");
   await seed();
@@ -34,6 +36,24 @@ api.get("/health", (_req, res) =>
   }),
 );
 api.get("/collections", (_req, res) => res.json(scanCollections()));
+// Client pay page (public): PayPal JS SDK buttons create/capture an Orders v2 order tied to the invoice.
+api.get("/pay/:ref", (req, res) => { try { res.json(payInfo(req.params.ref)); } catch (e: any) { res.status(404).json({ error: e.message }); } });
+api.post("/pay/:ref/order", wrap(async (req: any, res: any) => res.json(await createPayOrder(req.params.ref))));
+api.post("/pay/:ref/capture", wrap(async (req: any, res: any) => res.json(await capturePayOrder(req.params.ref, String(req.body.order_id || "")))));
+api.post("/sync", wrap(async (_req: any, res: any) => res.json(await syncInvoices())));
+api.get("/sync", (_req, res) => res.json(lastSync()));
+// Autopilot collections
+api.get("/autopilot", (_req, res) => res.json({ policy: policy(), activity: activity(), approvals: approvals(), outcomes: outcomes() }));
+api.post("/autopilot/policy", (req, res) => res.json(setPolicy(req.body || {})));
+api.post("/autopilot/run", wrap(async (_req: any, res: any) => res.json(await runAutopilot({ force: true, trigger: "manual" }))));
+api.post("/autopilot/approvals/:id", wrap(async (req: any, res: any) => res.json(await approve(req.params.id, req.body.decision === "reject" ? "reject" : "approve"))));
+api.get("/outcomes", (_req, res) => res.json(outcomes()));
+scheduleAutopilot();
+if (!mock && process.env.SYNC_DISABLED !== "1") {
+  const every = Math.max(60000, Number(process.env.SYNC_INTERVAL_MS || 300000));
+  const sweep = () => syncInvoices().then((r) => r.changed.length && console.log("PayPal sync:", r.changed.length, "changed")).catch((e) => console.error("sync", e.message));
+  setTimeout(sweep, 15000).unref(); setInterval(sweep, every).unref();
+}
 api.get("/cashflow", (_req, res) => res.json(cashflow()));
 api.post("/collections/run", wrap(async (req: any, res: any) => res.json(await execute("run_collections", {}, req.body.session_id || "default"))));
 if (process.env.COLLECTIONS_AUTO === "1" || process.env.SEED === "1") {
@@ -130,6 +150,7 @@ api.get("/invoices/:id", (req, res) => {
   if (!i) return res.status(404).json({ error: "Not found" });
   res.json({
     ...i,
+    pay_link: payLinkFor(i),
     timeline: db
       .prepare(
         "SELECT * FROM events WHERE invoice_id=? ORDER BY datetime(created_at),rowid",
@@ -199,6 +220,7 @@ api.post(
         "CHECKOUT.ORDER.APPROVED",
         "PAYMENT.CAPTURE.COMPLETED",
         "PAYMENT.CAPTURE.REFUNDED",
+        "PAYMENT.CAPTURE.DENIED",
       ].includes(req.body.event_type)
     )
       return res

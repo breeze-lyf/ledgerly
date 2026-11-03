@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { PayPage, AutopilotPanel, OutcomesStrip } from "./extras";
 declare global {
   interface Window {
     __BASE_PATH__: string;
@@ -55,6 +56,9 @@ function App() {
   const [panel, Panel] = useState("chat");
   const [completed, Completed] = useState<string[]>([]);
   const [dark, D] = useState(false);
+  const [tick, Tick] = useState(0);
+  const [toast, Toast] = useState("");
+  const [flash, Flash] = useState("");
   function switchPanel(next: string) {
     Panel(next);
     if (window.matchMedia("(max-width: 850px)").matches)
@@ -76,7 +80,16 @@ function App() {
       .then(M)
       .catch(() => {});
     const stream = new EventSource(base + "api/stream");
-    stream.onmessage = () => {
+    stream.onmessage = (m) => {
+      Tick((t) => t + 1);
+      try {
+        const e = JSON.parse(m.data);
+        if (/PAID_VIA_PAYPAL|INVOICING\.INVOICE\.PAID|SYNC\.PAID/.test(e.event_type || "")) {
+          Toast("💸 Payment received via PayPal" + (e.data?.amount ? " · " + money(Number(e.data.amount), e.data.currency || "USD") : ""));
+          Flash(e.invoice_id || "");
+          setTimeout(() => Toast(""), 6000);
+        }
+      } catch { /* heartbeat */ }
       refresh().catch(() => {});
     };
     return () => stream.close();
@@ -249,6 +262,8 @@ function App() {
           ].map(([label,value,note],n) => <div key={label}><span>{label}{n<3 ? " · USD" : " · USD invoices"}</span><strong>{value === undefined ? "—" : n===3 ? value : money(Number(value))}</strong><small>{note}</small></div>)}
         </section>
         <p className="cashflow-caption">Local PayPal mirror · Received this month: {money(cash.received_this_month || 0)} USD · Forecasts use invoice due dates.</p>
+        <OutcomesStrip tick={tick} />
+        {toast && <div className="toast" role="status">{toast}</div>}
         <nav className="mobile-tabs" aria-label="Workspace panels">
           <button aria-pressed={panel === "chat"} onClick={() => switchPanel("chat")}>Chat</button>
           <button aria-pressed={panel === "invoices"} onClick={() => switchPanel("invoices")}>Invoices</button>
@@ -469,7 +484,7 @@ function App() {
             </div>
           </section>
           <aside className="panel invoices">
-            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button></div>
+            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button></div>
             <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
               {cash.by_currency?.flatMap((g:any)=>g.by_client).filter((c:any)=>c.outstanding>0).map((c:any)=><div key={c.client+c.currency} title={c.note}><span>{c.client} <small>{money(c.outstanding,c.currency)}</small></span><span className={"risk "+c.risk}>{c.risk}</span></div>)}
               {!cash.by_currency?.some((g:any)=>g.by_client.some((c:any)=>c.outstanding>0)) && <p>No outstanding client balances.</p>}
@@ -493,13 +508,14 @@ function App() {
             {selected ? (
               <div className="details">
                 <div className="detail-top">
-                  <span className={"badge " + selected.status}>
+                  <span className={"badge " + selected.status + (flash === selected.id ? " flash" : "")}>
                     {selected.status.replaceAll("_", " ")}
                   </span>
                   <h2>{selected.client}</h2>
                   <strong>{money(selected.amount, selected.currency)}</strong>
                   <p>Due {selected.due_date}</p>
                   <code>{selected.id}</code>
+                  {(selected as any).pay_link && selected.status !== "DRAFT" && <div className="paylink"><span>Client pay link:</span><a href={(selected as any).pay_link} target="_blank" rel="noreferrer">Open pay page ↗</a><button className="text-button" onClick={() => navigator.clipboard.writeText((selected as any).pay_link).catch(() => E("Could not copy link"))}>Copy</button></div>}
                 </div>
                 <div className="actions">
                   {selected.status === "DRAFT" && (
@@ -598,7 +614,7 @@ function App() {
                       </div>
                       <div className="invoice-amount">
                         <b>{money(i.amount, i.currency)}</b>
-                        <span className={"badge " + i.status}>
+                        <span className={"badge " + i.status + (flash === i.id ? " flash" : "")}>
                           {i.status.replaceAll("_", " ")}
                         </span>
                       </div>
@@ -608,6 +624,7 @@ function App() {
               </div>
             )}
             </>}
+            {sideTab === "autopilot" && <AutopilotPanel tick={tick} onError={E} />}
             {sideTab === "orders" && <div className="details order-list">
               <h3>Orders & payments <span className="count">{orders.length}</span></h3>
               {!orders.length && <p>No payment links yet.</p>}
@@ -643,4 +660,5 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+const payMatch = location.pathname.slice(base.length - 1).match(/^\/pay\/([^/]+)/);
+createRoot(document.getElementById("root")!).render(payMatch ? <PayPage refId={decodeURIComponent(payMatch[1])} /> : <App />);
