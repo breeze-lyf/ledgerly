@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
-import { PayPage, AutopilotPanel, OutcomesStrip, RetainersPanel, describeAction } from "./extras";
+import { PayPage, AutopilotPanel, FinancePanel, OutcomesStrip, RetainersPanel, describeAction } from "./extras";
 declare global {
   interface Window {
     __BASE_PATH__: string;
@@ -501,7 +501,7 @@ function App() {
             </div>
           </section>
           <aside className="panel invoices">
-            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button><button aria-pressed={sideTab === "retainers"} onClick={() => SideTab("retainers")}>Retainers</button></div>
+            <div className="panel-heading actions"><button aria-pressed={sideTab === "finance"} onClick={() => SideTab("finance")}>Finance employee</button><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button><button aria-pressed={sideTab === "retainers"} onClick={() => SideTab("retainers")}>Retainers</button></div>
             <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
               {cash.by_currency?.flatMap((g:any)=>g.by_client).filter((c:any)=>c.outstanding>0).map((c:any)=><div key={c.client+c.currency} title={c.note}><span>{c.client} <small>{money(c.outstanding,c.currency)}</small></span><span className={"risk "+c.risk}>{c.risk}</span></div>)}
               {!cash.by_currency?.some((g:any)=>g.by_client.some((c:any)=>c.outstanding>0)) && <p>No outstanding client balances.</p>}
@@ -641,6 +641,7 @@ function App() {
               </div>
             )}
             </>}
+            {sideTab === "finance" && <FinancePanel tick={tick} onError={E} />}
             {sideTab === "autopilot" && <AutopilotPanel tick={tick} onError={E} />}
             {sideTab === "retainers" && <RetainersPanel tick={tick} onError={E} onCards={(cards) => M((m) => [...m, { role: "assistant", content: "Review the retainer, then confirm or cancel. Nothing is created at PayPal until you confirm.", cards }])} />}
             {sideTab === "orders" && <div className="details order-list">

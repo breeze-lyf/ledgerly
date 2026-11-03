@@ -186,3 +186,32 @@ export function RetainersPanel({ tick, onError, onCards }: { tick: number; onErr
     </div>)}
   </div>;
 }
+
+/** Finance employee: multi-step approval cards proposed from GitHub + email signals. */
+export function FinancePanel({ tick, onError }: { tick: number; onError: (m: string) => void }) {
+  const [plans, setPlans] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [log, setLog] = useState<any[]>([]);
+  const [busy, setBusy] = useState("");
+  const load = () => Promise.all([api("finance/plans"), api("finance/projects"), api("finance/activity")]).then(([p, j, a]) => { setPlans(p); setProjects(j); setLog(a); }).catch((e) => onError(e.message));
+  useEffect(() => { load(); }, [tick]);
+  const decide = async (id: string, decision: string) => { setBusy(id); try { await api("finance/plans/" + id, { decision }); } catch (e: any) { onError(e.message); } setBusy(""); load(); };
+  const icon: Record<string, string> = { done: "✓", waiting: "…", failed: "✕", pending: "○", skipped: "–" };
+  const cur = (pid: string) => projects.find((p) => p.id === pid)?.currency || "USD";
+  return <div className="details finance">
+    {plans.length === 0 && <p className="muted">Nothing to approve. Ledgerly is watching GitHub and your inbox for delivered, client-approved work.</p>}
+    {plans.map((p) => <div key={p.id} className={"plan-card " + p.status}>
+      <div className="plan-head"><strong>{p.headline}</strong><span className="badge">{p.status}</span></div>
+      <p className="muted">{projects.find((x) => x.id === p.project_id)?.title} · {Math.round(p.detection.confidence * 100)}% confident ({p.detection.method})</p>
+      <p>{p.detection.rationale}</p>
+      <details><summary>Evidence ({p.evidence.length})</summary><ul>{p.evidence.map((e: any) => <li key={e.id}>{e.source === "github" ? "GitHub" : "Email"} · {e.title} <span className="muted">{e.actor} · {when(e.at)}</span>{e.url && <> · <a href={e.url} target="_blank" rel="noreferrer">open</a></>}</li>)}</ul></details>
+      <ol className="plan-steps">{p.steps.map((s: any) => <li key={s.id} className={s.status}><span>{icon[s.status] || "○"}</span> {s.label}{s.error && <em className="error"> — {s.error}</em>}</li>)}</ol>
+      {(p.status === "pending" || p.status === "failed") && <div className="actions">
+        <button className="primary" disabled={busy === p.id} onClick={() => decide(p.id, "approve")}>{p.status === "failed" ? "Retry" : `Approve all (${money(p.steps[0]?.amount, cur(p.project_id))})`}</button>
+        {p.status === "pending" && <button disabled={busy === p.id} onClick={() => decide(p.id, "reject")}>Reject</button>}
+      </div>}
+    </div>)}
+    <h4>What Ledgerly noticed</h4>
+    <ul className="activity">{log.slice(0, 15).map((l) => <li key={l.id}><span className="muted">{when(l.created_at)}</span> {l.message}</li>)}</ul>
+  </div>;
+}
