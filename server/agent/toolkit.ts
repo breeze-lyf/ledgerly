@@ -25,7 +25,7 @@ axios.interceptors.response.use(response => response, error => {
   return Promise.reject(error);
 });
 const actions = Object.fromEntries(
-  ["invoices", "orders", "payments", "refunds"].map((k) => [
+  ["invoices", "orders", "payments", "refunds", "disputes", "transactions", "subscriptions"].map((k) => [
     k,
     ALL_TOOLS_ENABLED[k] || {},
   ]),
@@ -35,6 +35,7 @@ export const toolkit = new PayPalAgentToolkit({
   clientSecret: mock ? "mock" : process.env.PAYPAL_CLIENT_SECRET!,
   configuration: { actions, context: { sandbox: true } },
 });
+export const readOnlyToolkit = ["list_disputes", "get_dispute", "list_transactions", "show_subscription_details"];
 const names = [
   "create_invoice",
   "send_invoice",
@@ -49,6 +50,8 @@ const names = [
   "pay_order",
   "create_refund",
   "get_refund",
+  // Read-only groups: disputes, transaction search, subscription details.
+  ...readOnlyToolkit,
 ];
 export const paypalTools = toolkit
   .getTools()
@@ -84,6 +87,7 @@ async function executeTool(
   name: string, a: any, session: string, confirmed: boolean,
 ): Promise<any[]> {
   if (name === "refund_invoice") return action(name, a, false, session);
+  if (readOnlyToolkit.includes(name)) return [await readToolkit(name, a)];
   if (name === "refund" && a.invoice_id && a.capture_id)
     return action(name, a, confirmed, session);
   
@@ -168,7 +172,27 @@ async function executeTool(
   }
   return action(mapped, a, confirmed, session);
 }
+function mockRead(name: string, a: any) {
+  if (name === "list_disputes") return { items: [], total_items: 0 };
+  if (name === "get_dispute") return { dispute_id: a.dispute_id, status: "UNKNOWN_IN_MOCK" };
+  if (name === "show_subscription_details") return db.prepare("SELECT * FROM retainers WHERE subscription_id=?").get(a.subscription_id || a.id) || { id: a.subscription_id, status: "UNKNOWN_IN_MOCK" };
+  return { transaction_details: [], total_items: 0 };
+}
+/** Read-only Agent Toolkit tools executed by the toolkit itself (no money moves). */
+async function readToolkit(name: string, a: any) {
+  let result: any;
+  if (mock) result = mockRead(name, a || {});
+  else {
+    const r = await toolkit.handleToolCall({ id: "ledgerly-" + name, type: "function", function: { name, arguments: JSON.stringify(a || {}) } } as any);
+    try { result = typeof r.content === "string" ? JSON.parse(r.content) : r.content; } catch { result = { text: String(r.content) }; }
+  }
+  let text = JSON.stringify(result);
+  if (text.length > 6000) result = { truncated: true, preview: text.slice(0, 6000) };
+  event(name, "TOOLKIT.READ", { tool: name, executor: mock ? "mock" : "toolkit" });
+  return { kind: "toolkit_result", tool: name, result };
+}
 export function trace(tool: string) {
+  if (readOnlyToolkit.includes(tool)) return { tool, source: "paypal-agent-toolkit", executor: mock ? "mock" : "toolkit" };
   const methods: Record<string, keyof PayPalClient> = {
     create_invoice: "createDraftInvoice", create_invoice_series: "createDraftInvoice",
     send_invoice: "sendInvoice", send_invoice_reminder: "remindInvoice", remind_invoice: "remindInvoice",

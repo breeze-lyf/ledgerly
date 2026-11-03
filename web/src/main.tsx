@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
-import { PayPage, AutopilotPanel, OutcomesStrip } from "./extras";
+import { PayPage, AutopilotPanel, OutcomesStrip, RetainersPanel, describeAction } from "./extras";
 declare global {
   interface Window {
     __BASE_PATH__: string;
@@ -312,9 +312,7 @@ function App() {
                         <div className="chat-card" key={j}>
                           <b>{c.label}</b>
                           <p>
-                            {c.name === "refund"
-                              ? `Refund ${c.args.amount || "remaining balance"}`
-                              : c.name === "remind_invoice" ? `Remind ${c.args.invoice_id} · ${c.args.tone || "friendly"}` : `Send ${c.args.invoice_ids?.length || 1} draft invoice(s)`}
+                            {describeAction(c.name, c.args)}
                           </p>
                           <button
                             disabled={busy || completed.includes(c.id)}
@@ -331,6 +329,22 @@ function App() {
                           >
                             Cancel
                           </button>
+                        </div>
+                      ) : c.kind === "recurring_choice" ? (
+                        <div className="chat-card" key={j}><b>{c.text}</b>
+                          <p>Retainer subscription: the client approves once in PayPal and is billed automatically each month. Invoice series: one invoice per month that they pay individually.</p>
+                          <button disabled={busy} onClick={() => send(`Set up a retainer for ${c.args.client_name} $${c.args.amount}/month for ${c.args.months} months as a PayPal subscription${c.args.client_email ? " " + c.args.client_email : ""}`)}>Retainer subscription</button>{" "}
+                          <button disabled={busy} className="secondary" onClick={() => send(`Invoice ${c.args.client_name}${c.args.client_email ? " " + c.args.client_email : ""} $${c.args.amount} for ${c.args.months} months`)}>Invoice series</button>
+                        </div>
+                      ) : c.kind === "retainer" ? (
+                        <div className="chat-card" key={j}><b>Retainer · {c.client} · {money(c.amount, c.currency)}/month × {c.months}</b>
+                          <p>{c.status.replaceAll("_", " ")} · {c.cycles_paid}/{c.months} paid · PayPal subscription {c.subscription_id}</p>
+                          {c.status === "APPROVAL_PENDING" && c.approve_url && <a href={c.approve_url} target="_blank" rel="noreferrer">Send this approval link to your client ↗</a>}
+                        </div>
+                      ) : c.kind === "toolkit_result" ? (
+                        <div className="chat-card" key={j}><b>PayPal · {c.tool.replaceAll("_", " ")}</b>
+                          <p>{c.tool === "list_disputes" ? `${(c.result.items || []).length} dispute(s)` : c.tool === "list_transactions" ? `${(c.result.transaction_details || []).length} transaction(s)` : c.result.status || "Result"}</p>
+                          <details><summary>Raw response</summary><pre>{JSON.stringify(c.result, null, 2).slice(0, 3000)}</pre></details>
                         </div>
                       ) : c.kind === "collections" ? (
                         <div className="chat-card summary" key={j}>
@@ -484,7 +498,7 @@ function App() {
             </div>
           </section>
           <aside className="panel invoices">
-            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button></div>
+            <div className="panel-heading actions"><button aria-pressed={sideTab === "invoices"} onClick={() => SideTab("invoices")}>Invoices</button><button aria-pressed={sideTab === "orders"} onClick={() => SideTab("orders")}>Orders & payments</button><button aria-pressed={sideTab === "autopilot"} onClick={() => SideTab("autopilot")}>Autopilot</button><button aria-pressed={sideTab === "retainers"} onClick={() => SideTab("retainers")}>Retainers</button></div>
             <div className="client-risks"><b>Client risk <small>· heuristic</small></b>
               {cash.by_currency?.flatMap((g:any)=>g.by_client).filter((c:any)=>c.outstanding>0).map((c:any)=><div key={c.client+c.currency} title={c.note}><span>{c.client} <small>{money(c.outstanding,c.currency)}</small></span><span className={"risk "+c.risk}>{c.risk}</span></div>)}
               {!cash.by_currency?.some((g:any)=>g.by_client.some((c:any)=>c.outstanding>0)) && <p>No outstanding client balances.</p>}
@@ -625,6 +639,7 @@ function App() {
             )}
             </>}
             {sideTab === "autopilot" && <AutopilotPanel tick={tick} onError={E} />}
+            {sideTab === "retainers" && <RetainersPanel tick={tick} onError={E} onCards={(cards) => M((m) => [...m, { role: "assistant", content: "Review the retainer, then confirm or cancel. Nothing is created at PayPal until you confirm.", cards }])} />}
             {sideTab === "orders" && <div className="details order-list">
               <h3>Orders & payments <span className="count">{orders.length}</span></h3>
               {!orders.length && <p>No payment links yet.</p>}

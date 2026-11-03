@@ -21,16 +21,21 @@
     "webhook:simulate": "node scripts/simulate-webhook.mjs",
     "test:orders": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: tsx scripts/order-tests.ts",
     "test:lifecycle": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/lifecycle-tests.ts",
-    "test": "npm run test:orders && npm run test:lifecycle"
+    "test": "npm run test:orders && npm run test:lifecycle && npm run test:retainers",
+    "test:retainers": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/retainer-mcp-tests.ts",
+    "mcp": "tsx server/mcp-stdio.ts",
+    "mcp:start": "node dist/mcp-stdio.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@paypal/agent-toolkit": "1.11.0",
     "axios": "^1.21.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

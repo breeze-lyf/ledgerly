@@ -3,6 +3,7 @@ import { mock } from "./config.js";
 import { randomUUID } from "node:crypto";
 import { db, invoice, invoices, object, saveObject, order } from "./db.js";
 import { paypal } from "./paypal/index.js";
+import { createRetainer, cancelRetainer, retainerArgs, retainers, retainer, retainerWebhook } from "./subscriptions.js";
 import { settleInvoiceCapture, invoiceForCapture, payLinkFor, payLink } from "./lifecycle.js";
 export const listeners = new Set<(event: any) => void>();
 export function event(id: string, type: string, data: any = {}) {
@@ -49,7 +50,8 @@ export function pendingAction(name: string, args: any, session = "default") {
     kind: "pending_action",
     id,
     name,
-    label: name === "refund" ? "Confirm refund" : name === "remind_invoice" ? "Confirm reminder" : "Confirm send",
+    label: name === "refund" ? "Confirm refund" : name === "remind_invoice" ? "Confirm reminder"
+      : name === "create_retainer" ? "Confirm retainer subscription" : name === "cancel_retainer" ? "Confirm cancellation" : "Confirm send",
     args,
   };
 }
@@ -151,6 +153,16 @@ export async function action(
     return action("refund", { invoice_id: i.id, amount, currency: i.currency,
       ...(capture_id ? { capture_id } : {}) }, false, session);
   }
+  // Retainers (PayPal Subscriptions): creating or cancelling is always proposed first, then confirmed by a human.
+  if (name === "create_retainer")
+    return confirmed ? [await createRetainer(a, session)] : [pendingAction("create_retainer", retainerArgs(a), session)];
+  if (name === "cancel_retainer") {
+    const r = retainer(a.retainer_id || a.subscription_id || "") ||
+      retainers().find((x) => a.client && x.client.toLowerCase().includes(String(a.client).toLowerCase()) && !["CANCELLED", "EXPIRED"].includes(x.status));
+    if (!r) throw Error("Retainer not found");
+    return confirmed ? [await cancelRetainer(r.id)] : [pendingAction("cancel_retainer", { retainer_id: r.id, client: r.client }, session)];
+  }
+  if (name === "list_retainers") return retainers().map((r) => ({ kind: "retainer", ...r }));
   if (name === "what_needs_collecting") return [scanCollections()];
   if (name === "cashflow") return [{kind:"cashflow", ...cashflow()}];
   if (name === "run_collections") {
@@ -561,6 +573,7 @@ export async function webhook(e: any) {
     if (e.event_type === "CHECKOUT.ORDER.APPROVED") await captureApproved(e.resource.id);
     return;
   }
+  if (retainerWebhook(e)) return;
   const r = e.resource;
   // Captures/refunds that belong to a pay-page invoice are applied idempotently to that invoice.
   if (e.event_type.startsWith("PAYMENT.CAPTURE.")) {

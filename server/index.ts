@@ -17,6 +17,9 @@ import {
 import { toolkitHealth, execute } from "./agent/toolkit.js";
 import { chat } from "./agent/index.js";
 import { payInfo, createPayOrder, capturePayOrder, syncInvoices, lastSync, payLinkFor } from "./lifecycle.js";
+import { retainers, retainer, syncRetainer, retainerWebhook, simulatedRetainerEvent, retainerEventTypes } from "./subscriptions.js";
+import { createMcpServer, pendingMcpActions, MCP_SESSION } from "./mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { policy, setPolicy, runAutopilot, activity, outcomes, approvals, approve, scheduleAutopilot } from "./autopilot.js";
 if (mock && process.env.SEED_ON_START === "1") {
   const { seed } = await import("./seed.js");
@@ -47,6 +50,19 @@ api.get("/autopilot", (_req, res) => res.json({ policy: policy(), activity: acti
 api.post("/autopilot/policy", (req, res) => res.json(setPolicy(req.body || {})));
 api.post("/autopilot/run", wrap(async (_req: any, res: any) => res.json(await runAutopilot({ force: true, trigger: "manual" }))));
 api.post("/autopilot/approvals/:id", wrap(async (req: any, res: any) => res.json(await approve(req.params.id, req.body.decision === "reject" ? "reject" : "approve"))));
+// Retainers (PayPal Subscriptions). Create/cancel are proposed and confirmed through /actions/:id/confirm.
+api.get("/retainers", (_req, res) => res.json(retainers()));
+api.post("/retainers", wrap(async (req: any, res: any) => res.json(await action("create_retainer", req.body || {}, false, req.body?.session_id || "default"))));
+api.post("/retainers/:id/cancel", wrap(async (req: any, res: any) => res.json(await action("cancel_retainer", { retainer_id: req.params.id }, false, req.body?.session_id || "default"))));
+api.post("/retainers/:id/sync", wrap(async (req: any, res: any) => res.json(await syncRetainer(req.params.id))));
+api.post("/dev/retainer-event", wrap(async (req: any, res: any) => {
+  if (!mock) return res.sendStatus(404);
+  if (!retainerEventTypes.includes(req.body.event_type) || !retainer(req.body.retainer_id || "")) return res.status(400).json({ error: "Valid event_type and retainer_id required" });
+  req.body = simulatedRetainerEvent(req.body.event_type, req.body.retainer_id, req.body.amount);
+  await handleWebhook(req, res);
+}));
+// Actions proposed by external MCP agents, confirmed by a human in the UI.
+api.get("/mcp/pending", (_req, res) => res.json({ session_id: MCP_SESSION, actions: pendingMcpActions(), enabled: !!process.env.MCP_TOKEN }));
 api.get("/outcomes", (_req, res) => res.json(outcomes()));
 scheduleAutopilot();
 if (!mock && process.env.SYNC_DISABLED !== "1") {
@@ -279,6 +295,20 @@ api.post(
     res.json({ ok: true });
   }),
 );
+// Remote MCP endpoint (Streamable HTTP, stateless). Disabled unless MCP_TOKEN is set; bearer auth required.
+app.post(base + "mcp", wrap(async (req: any, res: any) => {
+  const token = process.env.MCP_TOKEN;
+  const given = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!token) return res.status(404).json({ error: "MCP endpoint disabled" });
+  const a = Buffer.from(given), b = Buffer.from(token);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Unauthorized" });
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  res.on("close", () => { transport.close(); server.close(); });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+}));
+app.all(base + "mcp", (_req, res) => res.status(405).json({ error: "Use POST" }));
 app.use(base + "api", api);
 app.use(base, express.static(pathResolve("web/dist"), { index: false }));
 app.get(base + "*", (req, res) => {

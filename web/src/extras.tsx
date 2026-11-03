@@ -117,6 +117,7 @@ export function AutopilotPanel({ tick, onError }: { tick: number; onError: (m: s
       <div className="actions"><button disabled={busy} onClick={async () => { setBusy(true); try { await api("autopilot/approvals/" + a.activity_id, {}); await load(); } catch (e: any) { onError(e.message); } finally { setBusy(false); } }}>Approve & send</button>
       <button className="secondary" disabled={busy} onClick={() => api("autopilot/approvals/" + a.activity_id, { decision: "reject" }).then(load)}>Reject</button></div>
     </div>)}</>}
+    <McpApprovals tick={tick} onError={onError} />
     <h4>AGENT ACTIVITY</h4>
     <div className="aplog">
       {!d.activity.length && <p>No autopilot runs yet.</p>}
@@ -126,5 +127,61 @@ export function AutopilotPanel({ tick, onError }: { tick: number; onError: (m: s
         {a.detail.message && <details><summary>{a.detail.subject || "Message"} · {a.detail.author}</summary><p>{a.detail.message}</p>{a.detail.pay_link && <p><a href={a.detail.pay_link} target="_blank" rel="noreferrer">{a.detail.pay_link}</a></p>}</details>}
       </div>)}
     </div>
+  </div>;
+}
+
+/** Actions proposed by external agents over MCP; nothing moves until a human confirms here. */
+export function McpApprovals({ tick, onError }: { tick: number; onError: (m: string) => void }) {
+  const [d, setD] = useState<any>(null);
+  const load = () => api("mcp/pending").then(setD).catch((e) => onError(e.message));
+  useEffect(() => { load(); }, [tick]);
+  if (!d) return null;
+  const act = (id: string, op: string) => api(`actions/${id}/${op}`, { session_id: d.session_id }).then(load).catch((e) => onError(e.message));
+  return <>
+    <h4>EXTERNAL AGENT APPROVALS (MCP)</h4>
+    {!d.actions.length && <p className="muted"><small>No proposals from MCP clients. {d.enabled ? "Remote MCP endpoint is on." : "Run `npm run mcp` locally to connect Claude Desktop or Cursor."}</small></p>}
+    {d.actions.map((a: any) => <div className="chat-card approval" key={a.id}>
+      <b>{describeAction(a.name, a.args)}</b><small>Proposed by an MCP client</small>
+      <div className="actions"><button onClick={() => act(a.id, "confirm")}>Confirm</button><button className="secondary" onClick={() => act(a.id, "cancel")}>Cancel</button></div>
+    </div>)}
+  </>;
+}
+export function describeAction(name: string, a: any) {
+  if (name === "create_retainer") return `Start retainer: ${a.client_name} · ${money(a.amount, a.currency)}/month × ${a.months}`;
+  if (name === "cancel_retainer") return `Cancel retainer ${a.retainer_id}${a.client ? " · " + a.client : ""}`;
+  if (name === "refund") return `Refund ${a.amount ? money(a.amount, a.currency) : "remaining balance"} · ${a.invoice_id || a.order_id}`;
+  if (name === "remind_invoice") return `Remind ${a.invoice_id} · ${a.tone || "friendly"}`;
+  return `Send ${a.invoice_ids?.length || 1} draft invoice(s)`;
+}
+
+/** Retainers = PayPal Subscriptions (Product → Plan → Subscription); client approves once, PayPal bills monthly. */
+export function RetainersPanel({ tick, onError, onCards }: { tick: number; onError: (m: string) => void; onCards: (cards: any[]) => void }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [f, setF] = useState<any>({ client_name: "", client_email: "", amount: "", months: "3" });
+  const [busy, setBusy] = useState(false);
+  const load = () => api("retainers").then(setRows).catch((e) => onError(e.message));
+  useEffect(() => { load(); }, [tick]);
+  const run = async (fn: () => Promise<any>) => { setBusy(true); try { const r = await fn(); if (Array.isArray(r)) onCards(r); await load(); } catch (e: any) { onError(e.message); } finally { setBusy(false); } };
+  return <div className="details retainers">
+    <h3>Retainers</h3>
+    <small>Monthly PayPal subscriptions. Your client approves once; PayPal bills each month and Ledgerly tracks every payment from webhooks.</small>
+    <div className="apgrid">
+      <label className="apfield">Client<input value={f.client_name} onChange={(e) => setF({ ...f, client_name: e.target.value })} /></label>
+      <label className="apfield">Client email<input value={f.client_email} onChange={(e) => setF({ ...f, client_email: e.target.value })} /></label>
+      <label className="apfield">Monthly amount ($)<input type="number" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
+      <label className="apfield">Months<input type="number" value={f.months} onChange={(e) => setF({ ...f, months: e.target.value })} /></label>
+    </div>
+    <div className="actions"><button disabled={busy || !f.client_name || !(Number(f.amount) > 0)} onClick={() => run(() => api("retainers", { ...f, amount: Number(f.amount), months: Number(f.months), client_email: f.client_email || undefined }))}>Propose retainer</button></div>
+    {!rows.length && <p className="muted">No retainers yet. Try “Bill Acme $800/month for 3 months” in chat.</p>}
+    {rows.map((r) => <div className={"chat-card retainer " + r.status.toLowerCase()} key={r.id}>
+      <b>{r.client} · {money(r.amount, r.currency)}/month × {r.months}</b>
+      <p><span className="badge">{r.status.replaceAll("_", " ")}</span> {r.cycles_paid}/{r.months} paid · collected {money(r.collected, r.currency)}{r.failed_payments ? ` · ${r.failed_payments} failed` : ""}</p>
+      <small>{r.id} · PayPal subscription {r.subscription_id}</small>
+      <div className="actions">
+        {r.status === "APPROVAL_PENDING" && r.approve_url && <><a href={r.approve_url} target="_blank" rel="noreferrer">Client approval link ↗</a><button className="secondary" onClick={() => navigator.clipboard?.writeText(r.approve_url)}>Copy</button></>}
+        <button className="secondary" disabled={busy} onClick={() => run(() => api(`retainers/${r.id}/sync`, {}))}>Sync from PayPal</button>
+        {!["CANCELLED", "EXPIRED"].includes(r.status) && <button className="secondary" disabled={busy} onClick={() => run(() => api(`retainers/${r.id}/cancel`, {}))}>Cancel…</button>}
+      </div>
+    </div>)}
   </div>;
 }

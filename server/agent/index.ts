@@ -43,6 +43,9 @@ const tools = [
     period: str,
   }),
   own("ask_clarification", { question: str }),
+  own("create_retainer", { client_name: str, client_email: str, amount: { type: "number", description: "monthly amount" }, months: { type: "number" }, currency: str }),
+  own("cancel_retainer", { retainer_id: str, client: str }),
+  own("list_retainers", {}),
 ];
 function state(session: string) {
   return JSON.parse(
@@ -57,6 +60,15 @@ function save(session: string, pending: any) {
   );
 }
 function parse(s: string): [string, any] {
+  const ret = s.match(/^(?:bill|charge|set up a retainer for|retainer for|subscribe)\s+(.+?)\s+\$([\d,.]+)\s*(?:\/|per|a)\s*month(?:\s+for\s+(\d+)\s+months?)?/i);
+  if (ret) {
+    const email = s.match(/[\w.+-]+@[\w.-]+\.[a-z]+/i)?.[0];
+    const args = { client_name: ret[1].replace(email || "\0", "").trim(), client_email: email, amount: Number(ret[2].replaceAll(",", "")), months: Number(ret[3] || 12), currency: "USD" };
+    if (/subscription|retainer|auto.?bill|autopay/i.test(s)) return ["create_retainer", args];
+    return ["recurring_choice", args];
+  }
+  if (/list (?:my )?retainers|show (?:my )?retainers|subscriptions/i.test(s) && !/dispute/i.test(s)) return ["list_retainers", {}];
+  if (/disputes?/i.test(s)) return ["list_disputes", {}];
   if (/what needs collecting|collections.*status/i.test(s)) return ["what_needs_collecting", {}];
   if (/run collections|send overdue reminders/i.test(s)) return ["run_collections", {}];
   if (/cashflow|cash flow/i.test(s)) return ["cashflow", {}];
@@ -164,6 +176,9 @@ export async function chat(message: string, session = "default") {
     mode = "fallback",
     notice = "";
   const run = async (name: string, args: any) => {
+    if (name === "recurring_choice") {
+      return [{ kind: "recurring_choice", text: `How should I bill ${args.client_name} ${args.currency} ${args.amount}/month for ${args.months} months?`, args }];
+    }
     if (name === "ask_clarification") {
       save(session, { question: args.question });
       return [{ kind: "clarification", text: args.question }];
@@ -267,7 +282,7 @@ export async function chat(message: string, session = "default") {
             {
               role: "system",
               content:
-                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. Use create_invoice_series for N months. Ask clarification for missing client, amount or email before sending. Use what_needs_collecting for collections questions, run_collections to propose confirmed reminders, and cashflow for cashflow questions. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds on an order use refund_order with order_id and optional amount. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
+                "You are Ledgerly. Use tools for financial operations. Never send or refund without user confirmation: tool calls only propose pending actions. For recurring work ('$X/month for N months', 'retainer', 'every month'): if the user did not say how, ask_clarification offering a choice between a PayPal retainer subscription (create_retainer: client approves once and is auto-billed monthly) and an invoice series (create_invoice_series: one invoice per month). Use create_retainer when they say subscription, retainer, auto-bill or autopay; create_retainer only proposes it for confirmation. Use list_retainers and cancel_retainer for existing retainers. Use list_disputes/get_dispute for disputes, list_transactions for transaction search, show_subscription_details for a PayPal subscription id. Ask clarification for missing client, amount or email before sending. Use what_needs_collecting for collections questions, run_collections to propose confirmed reminders, and cashflow for cashflow questions. Use reconcile for paid/unpaid/overdue questions. Use draft_reminder for reminders. For refunds on an order use refund_order with order_id and optional amount. For refunds by client or invoice ALWAYS use refund_invoice with client or invoice_id and optional amount. Never ask the user for capture IDs; refund_invoice resolves stored payment details and proposes a pending refund for confirmation. Never claim success without tool results. Creating a draft automatically proposes sending it; do not call send_invoice again for that draft. Never create an invoice that duplicates an existing DRAFT for the same client and amount in this session; reuse the existing draft and its pending send action.",
             },
             ...history,
           ];
