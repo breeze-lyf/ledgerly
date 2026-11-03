@@ -63,7 +63,7 @@ header {
   justify-content: space-between;
 }
 .brand {
-  font-family: Manrope, sans-serif;
+  font-family: "Inter Tight", Manrope, sans-serif;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -859,3 +859,6 @@ button:disabled {
   from { transform: scale(0.4) rotate(-12deg); opacity: 0; }
   to { transform: none; opacity: 1; }
 }
+.paybrand b { display: inline-flex; align-items: center; gap: 8px; }
+.paybrand .logo-img { width: 28px; height: 28px; }
+.paycard .paid-seal { margin: 4px auto 12px; }

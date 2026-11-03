@@ -51,7 +51,7 @@ export function PayPage({ refId }: { refId: string }) {
   }
   return <div className="paypage">
     <div className="paycard">
-      <div className="paybrand"><b>LEDGERLY</b><span>Secure invoice payment · PayPal {info?.paypal?.mode === "mock" ? "mock" : "sandbox"}</span></div>
+      <div className="paybrand"><b><img className="logo-img" src={base + "ledgerly-mark.svg"} alt="" width={28} height={28} />LEDGERLY</b><span>Secure invoice payment · PayPal {info?.paypal?.mode === "mock" ? "mock" : "sandbox"}</span></div>
       {state === "loading" && <p>Loading invoice…</p>}
       {state === "error" && <p className="payerror">{error}</p>}
       {info && <>
@@ -62,6 +62,7 @@ export function PayPage({ refId }: { refId: string }) {
         {state === "ready" && info.paypal.mode === "sandbox" && <div ref={box} className="paybuttons" />}
         {state === "ready" && info.paypal.mode === "mock" && <button className="mockpay" onClick={() => mockPay().catch((e) => setError(e.message))}>Pay (mock PayPal)</button>}
         {state === "capturing" && <p>Confirming your payment with PayPal…</p>}
+        {(state === "paid" || state === "done") && info.status === "PAID" && <img className="paid-seal" src={base + "ledgerly-seal.svg"} alt="Paid" width={120} height={120} />}
         {(state === "paid" || state === "done") && <div className={"paydone " + info.status}><b>{info.status === "PAID" ? "✓ Payment received — thank you!" : `Invoice status: ${info.status.replaceAll("_", " ")}`}</b><p>{info.status === "PAID" ? "PayPal confirmed the capture; the freelancer's dashboard updated instantly." : "This invoice can't be paid online right now."}</p></div>}
         {error && state !== "error" && <p className="payerror">{error}</p>}
         <p className="paynote">Sandbox demo — no real money moves. Log in with a PayPal sandbox <i>personal</i> account or use a sandbox test card.</p>
