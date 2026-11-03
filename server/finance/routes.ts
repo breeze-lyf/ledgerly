@@ -5,6 +5,8 @@ import { createProject, feActivity, project, projects, signals } from "./store.j
 import { decide, plan, plans, scanProject } from "./plans.js";
 import "./invoice-step.js";
 import { memories } from "./memory.js";
+import { weekly } from "./weekly.js";
+import { clientToken, negotiation } from "./negotiate.js";
 import { onDispute } from "./disputes.js";
 import { authorizeHold, createHoldOrder, holdInfo, reauthorizeDue, voidHold } from "./money.js";
 import { object } from "../db.js";
@@ -45,6 +47,10 @@ export function mountFinance(api: Router, extra?: (api: Router) => void) {
   api.post("/finance/projects/:id/hold/void", wrap(async (req: any, res: any) => { try { res.json(await voidHold(req.params.id)); } catch (e) { bad(res, e); } }));
   api.post("/finance/reauthorize-due", wrap(async (_req: any, res: any) => res.json(await reauthorizeDue())));
   if (process.env.FINANCE_SWEEP !== "0") setInterval(() => reauthorizeDue().catch(e => console.error("reauth sweep", e.message)), 3600_000).unref();
+  api.get("/finance/weekly", (_req, res) => res.json(weekly()));
+  api.get("/finance/projects/:id/negotiation", (req, res) => res.json(negotiation(req.params.id)));
+  // Issue (or rotate) the client-agent token. Shown once to the freelancer, who passes it to the client.
+  api.post("/finance/projects/:id/client-token", (req, res) => { if (!project(req.params.id)) return res.sendStatus(404); res.json({ token: clientToken(req.params.id, !!req.body?.rotate), mcp_path: "mcp/client" }); });
   api.get("/finance/memory", (_req, res) => res.json(memories()));
   api.get("/finance/disputes/:id/evidence.pdf", (req, res) => { const f = object("fe-dispute-pdf:" + req.params.id); if (!f) return res.sendStatus(404); res.type("application/pdf").send(Buffer.from(f.b64, "base64")); });
   // Demo tool: simulate PayPal's CUSTOMER.DISPUTE.CREATED for a real capture (the sandbox needs a buyer account to open one).

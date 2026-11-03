@@ -24,7 +24,7 @@ export async function createHoldOrder(projectId: string) {
   const p = project(projectId);
   if (!p) throw Error("project not found");
   if (p.hold?.status === "active") throw Error("funds are already held for this project");
-  const amount = unreleased(p);
+  const amount = money(unreleased(p) * (((p as any).terms?.deposit_pct ?? 100) / 100));
   if (!(amount > 0)) throw Error("nothing left to hold");
   const o = await paypal.createOrder({ intent: "AUTHORIZE", purchase_units: [{ reference_id: p.id, custom_id: p.id, description: `${p.title}: held for ${p.milestones.filter(m => m.status !== "released").length} milestones`.slice(0, 127), amount: { currency_code: p.currency, value: amount.toFixed(2) } }],
     application_context: { shipping_preference: "NO_SHIPPING", user_action: "CONTINUE", return_url: absolute(`hold/${p.id}?approved=1`), cancel_url: absolute(`hold/${p.id}`) } });

@@ -19,6 +19,8 @@ import { chat } from "./agent/index.js";
 import { payInfo, createPayOrder, capturePayOrder, syncInvoices, lastSync, payLinkFor } from "./lifecycle.js";
 import { retainers, retainer, syncRetainer, retainerWebhook, simulatedRetainerEvent, retainerEventTypes } from "./subscriptions.js";
 import { createMcpServer, pendingMcpActions, MCP_SESSION } from "./mcp.js";
+import { createClientMcpServer } from "./mcp-client.js";
+import { projectForClientToken } from "./finance/negotiate.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mountFinance } from "./finance/routes.js";
 import { financeWebhook } from "./finance/money.js";
@@ -308,6 +310,16 @@ app.post(base + "mcp", wrap(async (req: any, res: any) => {
   const a = Buffer.from(given), b = Buffer.from(token);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Unauthorized" });
   const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  res.on("close", () => { transport.close(); server.close(); });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+}));
+// Client-agent MCP (payer side): bearer = a per-project client token issued by the freelancer.
+app.post(base + "mcp/client", wrap(async (req: any, res: any) => {
+  const proj = projectForClientToken(String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""));
+  if (!proj) return res.status(401).json({ error: "Unauthorized" });
+  const server = createClientMcpServer(proj);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => { transport.close(); server.close(); });
   await server.connect(transport);

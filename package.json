@@ -25,6 +25,7 @@
     "test:retainers": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/retainer-mcp-tests.ts",
     "mcp": "tsx server/mcp-stdio.ts",
     "mcp:start": "node dist/mcp-stdio.js",
+    "mcp:client": "tsx server/mcp-client-stdio.ts",
     "test:finance": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/finance-tests.ts"
   },
   "dependencies": {

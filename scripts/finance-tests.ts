@@ -220,4 +220,43 @@ for (const n of [1, 2]) {
 const memF = learn("ap@fast.example");
 assert.equal(memF.strategy, "trusted", JSON.stringify(memF)); assert.equal(memF.terms_days, 15); assert.equal(memF.require_hold, false);
 console.log("day 5 dispute defense + client memory tests passed");
+
+// --- Day 6: agent-to-agent negotiation over MCP, then the hold is funded ---
+const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+const { createClientMcpServer, clientToolNames } = await import("../server/mcp-client.js");
+const nego = await import("../server/finance/negotiate.js");
+createProject({ id: "prj_fab", client: "Fabrikam Robotics", client_email: "ops@fabrikam.example", repo: "demo-org/fabrikam-portal", title: "Fabrikam partner portal", sow: "Portal with SSO and reports.",
+  milestones: [{ id: "f1", title: "SSO", amount: 1000, keywords: ["sso"] }, { id: "f2", title: "Reports", amount: 1000, keywords: ["reports"] }] });
+const tok = (await post("/finance/projects/prj_fab/client-token", {})).json.token;
+assert.match(tok, /^lc_[0-9a-f]{36}$/);
+assert.equal(nego.projectForClientToken(tok)!.id, "prj_fab"); assert.equal(nego.projectForClientToken("lc_" + "0".repeat(36)), undefined); assert.equal(nego.projectForClientToken("nope"), undefined);
+const [ct, st] = InMemoryTransport.createLinkedPair();
+await createClientMcpServer(nego.projectForClientToken(tok)!).connect(st);
+const agent = new Client({ name: "client-agent", version: "1" }); await agent.connect(ct);
+assert.deepEqual((await agent.listTools()).tools.map(t => t.name).sort(), [...clientToolNames].sort());
+const call = async (name: string, args: any = {}) => JSON.parse(((await agent.callTool({ name, arguments: args })) as any).content[0].text);
+const q = await call("get_quote");
+assert.equal(q.open_total, 2000); assert.match(q.how_funds_work, /not escrow/);
+const r1 = await call("propose_terms", { discount_pct: 10, deposit_pct: 0, net_days: 30, note: "Budget is tight this quarter" });
+assert.equal(r1.decision, "counter"); assert.deepEqual(r1.terms, { discount_pct: 0, deposit_pct: 30, net_days: 7 });
+const r2 = await call("propose_terms", { discount_pct: 5, deposit_pct: 100, net_days: 7 });
+assert.equal(r2.decision, "counter"); assert.deepEqual(r2.terms, { discount_pct: 2, deposit_pct: 100, net_days: 7 }); assert.equal(r2.saving, 40);
+await assert.rejects(call("accept_terms", { offer_id: r1.offer_id }).then(x => { if (!x.status) throw Error(); }), "only the latest offer");
+const acc = await call("accept_terms", { offer_id: r2.offer_id });
+assert.equal(acc.status, "agreed"); assert.equal(acc.funding.amount, 1960); assert.equal(acc.funding.status, "created"); assert.match(acc.funding.link, /hold\/prj_fab$/);
+assert.deepEqual(project("prj_fab")!.milestones.map(m => m.amount), [980, 980]);
+assert.equal((await call("propose_terms", { discount_pct: 50, deposit_pct: 100, net_days: 7 })).decision, "already_agreed");
+// The human at the client approves the PayPal hold (mock authorize stands in for the buyer approval).
+saveObject({ ...object(acc.order_id), status: "APPROVED" }); await money4.authorizeHold("prj_fab", acc.order_id);
+assert.equal((await call("get_funding_status")).hold.status, "active");
+// Bounds hold whatever the agent says: a hold-first client gets no discount and must fund 100%.
+assert.deepEqual(nego.evaluate({ discount_pct: 3, deposit_pct: 50, net_days: 30 }, nego.bounds(learn("finance@contoso.example"))).terms, { discount_pct: 0, deposit_pct: 100, net_days: 3 });
+assert.deepEqual(nego.evaluate({ discount_pct: 2, deposit_pct: 100, net_days: 7 }, nego.bounds(learn("ops@fabrikam.example"))), { decision: "accepted", terms: { discount_pct: 2, deposit_pct: 100, net_days: 7 }, reasons: [] });
+// Zero-touch week
+const { weekly } = await import("../server/finance/weekly.js");
+const w = weekly();
+assert.ok(w.collected.USD >= 800, JSON.stringify(w.collected)); assert.ok(w.ai_actions > w.human_approvals); assert.ok(w.hours_saved > 0);
+assert.equal(w.actions.negotiation_round, 2); assert.ok(w.actions.dispute_pack >= 2); assert.match(w.assumption.note, /assumption/);
+console.log("day 6 agent-to-agent negotiation + weekly view tests passed", JSON.stringify({ collected: w.collected, ai_actions: w.ai_actions, approvals: w.human_approvals, hours_saved: w.hours_saved }));
 server.close();
