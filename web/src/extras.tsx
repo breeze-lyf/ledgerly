@@ -211,7 +211,54 @@ export function FinancePanel({ tick, onError }: { tick: number; onError: (m: str
         {p.status === "pending" && <button disabled={busy === p.id} onClick={() => decide(p.id, "reject")}>Reject</button>}
       </div>}
     </div>)}
+    <h4>Projects</h4>
+    <ul className="activity">{projects.map((j) => <li key={j.id}><strong>{j.title}</strong> · {j.client} · {j.milestones.filter((m: any) => m.status === "released").length}/{j.milestones.length} milestones released · {j.hold?.status === "active" ? `${money(j.hold.amount - j.hold.captured, j.currency)} held at PayPal` : j.hold?.status ? `hold ${j.hold.status}` : <a href={base + "hold/" + j.id} target="_blank" rel="noreferrer">client funding link</a>}</li>)}</ul>
     <h4>What Ledgerly noticed</h4>
     <ul className="activity">{log.slice(0, 15).map((l) => <li key={l.id}><span className="muted">{when(l.created_at)}</span> {l.message}</li>)}</ul>
   </div>;
+}
+
+/** Client hold page: PayPal JS SDK with intent=authorize. Funds are held (up to 29 days) and captured per approved milestone. */
+export function HoldPage({ projectId }: { projectId: string }) {
+  const [info, setInfo] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [state, setState] = useState("loading");
+  const box = useRef<HTMLDivElement>(null);
+  const id = encodeURIComponent(projectId);
+  const load = () => api("hold/" + id).then((d) => { setInfo(d); setState(d.hold?.status === "active" || d.hold?.status === "captured" ? "held" : "ready"); }).catch((e) => { setError(e.message); setState("error"); });
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (state !== "ready" || info?.paypal?.mode !== "sandbox" || !info.paypal.client_id || !box.current) return;
+    const render = () => {
+      const paypal = (window as any).paypal; if (!paypal || !box.current) return;
+      box.current.innerHTML = "";
+      paypal.Buttons({ style: { layout: "vertical", label: "pay" },
+        createOrder: async () => (await api(`hold/${id}/order`, {})).id,
+        onApprove: async (data: any) => { setState("authorizing"); try { await api(`hold/${id}/authorize`, { order_id: data.orderID }); await load(); } catch (e: any) { setError(e.message); setState("ready"); } },
+        onError: (e: any) => setError(String(e?.message || e)) }).render(box.current);
+    };
+    if (document.getElementById("paypal-sdk-auth")) { render(); return; }
+    const s = document.createElement("script"); s.id = "paypal-sdk-auth";
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(info.paypal.client_id)}&currency=${info.currency}&intent=authorize&components=buttons&enable-funding=card`;
+    s.onload = render; s.onerror = () => setError("Could not load PayPal checkout"); document.head.appendChild(s);
+  }, [state, info]);
+  async function mockHold() {
+    setState("authorizing");
+    try { const o = await api(`hold/${id}/order`, {}); await api("mock-pay/" + o.id, {}); await api(`hold/${id}/authorize`, { order_id: o.id }); await load(); } catch (e: any) { setError(e.message); setState("ready"); }
+  }
+  return <div className="paypage"><div className="paycard">
+    <div className="paybrand"><b><img className="logo-img" src={base + "ledgerly-mark.svg"} alt="" width={28} height={28} />LEDGERLY</b><span>Milestone funding · PayPal {info?.paypal?.mode === "sandbox" ? "sandbox" : "mock"}</span></div>
+    {state === "loading" && <p>Loading…</p>}
+    {error && <p className="payerror">{error}</p>}
+    {info && <>
+      <p className="muted">{info.title} · for {info.client}</p>
+      <h1>{money(info.amount, info.currency)}</h1>
+      <p className="muted">Authorize now; you are charged only as each milestone is delivered and you approve it. The hold lasts up to 29 days, and anything not captured is released back to you. This is a PayPal payment authorization, not an escrow service.</p>
+      <ul className="milestones">{info.milestones.map((m: any) => <li key={m.id}>{m.status === "released" ? "✓" : "○"} {m.title} <span>{money(m.amount, info.currency)}</span></li>)}</ul>
+      {state === "held" && <p className="paid">Funds held · {money(info.hold.captured, info.currency)} captured so far</p>}
+      {state === "ready" && info.paypal.mode === "sandbox" && <div ref={box} />}
+      {state === "ready" && info.paypal.mode !== "sandbox" && <button className="primary" onClick={mockHold}>Authorize (mock)</button>}
+      {state === "authorizing" && <p>Authorizing with PayPal…</p>}
+    </>}
+  </div></div>;
 }

@@ -92,4 +92,80 @@ assert.equal(ap.steps[2].status, "done");
 const ev = await fetch(`http://127.0.0.1:${port}/api/finance/plans/${p2.id}/evidence`).then(r => r.json());
 assert.equal(ev.milestone.id, "m2"); assert.equal(ev.timeline.length, 2);
 console.log("day 3 detection + plan tests passed");
+
+// --- Day 4: milestone money flow + Payouts ---
+const money4 = await import("../server/finance/money.js");
+const { object, saveObject, invoice } = await import("../server/db.js");
+const { createPayOrder, capturePayOrder } = await import("../server/lifecycle.js");
+// Invoice path: when the m2 invoice is paid, the waiting payout is released.
+const invId = (await import("../server/finance/plans.js")).plan(p2.id)!.steps[0].result.invoice_id;
+const po = await createPayOrder(invId); saveObject({ ...object(po.id), status: "APPROVED" }); await capturePayOrder(invId, po.id);
+assert.equal(invoice(invId).status, "PAID");
+await new Promise(r => setTimeout(r, 50));
+const paidPlan = plan(p2.id)!;
+assert.equal(paidPlan.steps[0].status, "done"); assert.equal(paidPlan.steps[1].status, "done", "payout released after invoice paid"); assert.ok(paidPlan.steps[1].result.payout_batch_id);
+assert.equal(paidPlan.status, "executed"); assert.equal(project("prj_demo")!.milestones.find(m => m.id === "m2")!.status, "released");
+
+// Hold path.
+createProject({ id: "prj_hold", client: "Contoso Labs", client_email: "finance@contoso.example", repo: "demo-org/contoso-app", title: "Contoso app", sow: "Three milestones.",
+  milestones: [{ id: "m1", title: "API", amount: 800, keywords: ["api"] }, { id: "m2", title: "Dashboard", amount: 800, keywords: ["dashboard"] }, { id: "m3", title: "Launch", amount: 800, keywords: ["launch"] }],
+  splits: [{ name: "Subcontractor (demo)", email: "sub-demo@example.com", percent: 30 }] });
+const ho = await money4.createHoldOrder("prj_hold");
+await assert.rejects(money4.authorizeHold("prj_hold", ho.id), /ORDER_NOT_APPROVED/);
+saveObject({ ...object(ho.id), status: "APPROVED" });
+// The order-approved webhook for an AUTHORIZE order authorizes (never auto-captures).
+assert.equal(await money4.financeWebhook({ id: "WH-A1", event_type: "CHECKOUT.ORDER.APPROVED", resource: { id: ho.id, intent: "AUTHORIZE", status: "APPROVED" } }), true);
+let hp = project("prj_hold")!;
+assert.equal(hp.hold.status, "active"); assert.equal(hp.hold.amount, 2400); assert.equal(object(hp.hold.authorization_id).status, "CREATED");
+const deliver = async (n: number, title: string, approvalText: string, id: string) => {
+  const pr = { action: "closed", repository: { full_name: "demo-org/contoso-app" }, pull_request: { number: n, merged: true, title, body: "", user: { login: "dev-demo" }, html_url: "", merged_at: new Date().toISOString(), labels: [] } };
+  await post("/intake/github", pr, { "x-github-event": "pull_request", "x-hub-signature-256": sign(pr) });
+  return (await post("/intake/email", { message_id: id, from: "finance@contoso.example", subject: title, text: approvalText }, { authorization: "Bearer test-intake-token" })).json.plans[0];
+};
+const c1 = await deliver(1, "API endpoints", "The API looks great, approved.", "<c1>");
+assert.deepEqual(c1.steps.map((s: any) => s.type), ["capture_hold", "payout", "evidence_pack"]);
+assert.equal(c1.steps[0].final, false);
+const e1 = await decide(c1.id, "approve");
+assert.equal(e1.status, "executed", JSON.stringify(e1.steps));
+assert.equal(e1.steps[0].result.final_capture, false); assert.equal(e1.steps[1].amount, 240);
+hp = project("prj_hold")!;
+assert.equal(hp.hold.captured, 800); assert.equal(object(hp.hold.authorization_id).status, "PARTIALLY_CAPTURED");
+// Retrying an executed plan is refused (no double capture).
+await assert.rejects(decide(c1.id, "approve"), /executed/);
+const c2 = await deliver(2, "Dashboard v1", "Dashboard looks good, ship it", "<c2>");
+assert.equal((await decide(c2.id, "approve")).status, "executed");
+assert.equal(project("prj_hold")!.hold.captured, 1600);
+// Payout webhooks are tracked.
+const batch = plan(c2.id)!.steps[1].result.payout_batch_id;
+assert.equal(await money4.financeWebhook({ id: "WH-P1", event_type: "PAYMENT.PAYOUTSBATCH.SUCCESS", resource: { batch_header: { payout_batch_id: batch, batch_status: "SUCCESS" } } }), true);
+assert.equal(object("fe-payout:" + batch).status, "SUCCESS");
+// Reauthorization: not before day 4, exactly once afterwards.
+assert.deepEqual(await money4.reauthorizeDue(Date.now() + 1 * 864e5), []);
+hp = project("prj_hold")!;
+const fourDaysAgo = new Date(Date.now() - 3.2 * 864e5).toISOString();
+saveObject({ ...object(hp.hold.authorization_id), create_time: fourDaysAgo });
+hp.hold.authorized_at = fourDaysAgo; hp.hold.reauthorize_after = new Date(Date.parse(fourDaysAgo) + 3 * 864e5).toISOString();
+(await import("../server/finance/store.js")).saveProject(hp);
+const oldAuth = hp.hold.authorization_id;
+assert.deepEqual(await money4.reauthorizeDue(), ["prj_hold"]);
+hp = project("prj_hold")!;
+assert.notEqual(hp.hold.authorization_id, oldAuth); assert.equal(hp.hold.reauthorized, true); assert.equal(object(hp.hold.authorization_id).amount.value, "800.00");
+assert.deepEqual(await money4.reauthorizeDue(Date.now() + 5 * 864e5), [], "only one reauthorization");
+// Final milestone captures with final_capture=true against the new authorization.
+const c3 = await deliver(3, "Launch release", "Launch approved, thanks!", "<c3>");
+assert.equal(c3.steps[0].final, true);
+const e3 = await decide(c3.id, "approve");
+assert.equal(e3.status, "executed"); assert.equal(e3.steps[0].result.final_capture, true);
+assert.equal(project("prj_hold")!.hold.status, "captured"); assert.equal(project("prj_hold")!.hold.captured, 2400);
+// Void: a new hold on another project is released back to the client.
+createProject({ id: "prj_void", client: "Fabrikam (demo)", client_email: "ap@fabrikam.example", title: "Fabrikam audit", sow: "", milestones: [{ title: "Audit", amount: 500 }] });
+const vo = await money4.createHoldOrder("prj_void"); saveObject({ ...object(vo.id), status: "APPROVED" }); await money4.authorizeHold("prj_void", vo.id);
+await money4.voidHold("prj_void");
+assert.equal(project("prj_void")!.hold.status, "voided");
+await assert.rejects(money4.voidHold("prj_void"), /no active hold/);
+// Guardrail: an over-capture is refused before calling PayPal.
+const { runners } = await import("../server/finance/plans.js");
+await assert.rejects(runners.capture_hold!({ id: "s1", type: "capture_hold", amount: 99999, label: "", status: "pending" }, { id: "plan_x", milestone_id: "m1", steps: [] } as any, project("prj_hold")!), /no active PayPal hold|exceeds/);
+await assert.rejects(runners.payout!({ id: "p9", type: "payout", amount: 10, to: "stranger@example.com", label: "", status: "pending" }, { id: "plan_y", milestone_id: "m1", steps: [] } as any, project("prj_hold")!), /not a configured split/);
+console.log("day 4 money flow + payouts tests passed");
 server.close();

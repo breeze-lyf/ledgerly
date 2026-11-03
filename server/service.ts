@@ -544,6 +544,8 @@ export async function captureApproved(id: string) {
     const o = order(id);
     if (o?.capture_id) return;
     let remote = await paypal.getOrder(id);
+    // Milestone holds (intent=AUTHORIZE) are authorized and captured per milestone by the finance module, never auto-captured here.
+    if (remote.intent === "AUTHORIZE") return;
     if (!o) {
       const unit = remote.purchase_units[0];
       db.prepare("INSERT OR IGNORE INTO orders(id,description,amount,currency,status,data) VALUES (?,?,?,?,?,?)").run(id, unit.description || "Payment", Number(unit.amount.value), unit.amount.currency_code, remote.status, JSON.stringify(remote));

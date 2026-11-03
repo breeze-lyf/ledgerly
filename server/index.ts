@@ -21,6 +21,7 @@ import { retainers, retainer, syncRetainer, retainerWebhook, simulatedRetainerEv
 import { createMcpServer, pendingMcpActions, MCP_SESSION } from "./mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mountFinance } from "./finance/routes.js";
+import { financeWebhook } from "./finance/money.js";
 import { policy, setPolicy, runAutopilot, activity, outcomes, approvals, approve, scheduleAutopilot } from "./autopilot.js";
 if (mock && process.env.SEED_ON_START === "1") {
   const { seed } = await import("./seed.js");
@@ -221,6 +222,8 @@ async function handleWebhook(req: any, res: any) {
     console.log("PayPal webhook verification:", verified ? "SUCCESS" : "FAILURE");
     if (!verified) return res.status(401).json({ error: "Invalid webhook signature" });
   }
+  if (req.body?.id && !object("fe-wh:" + req.body.id) && await financeWebhook(req.body)) { saveObject({ id: "fe-wh:" + req.body.id }); return res.json({ ok: true }); }
+  if (req.body?.id && object("fe-wh:" + req.body.id)) return res.json({ ok: true, duplicate: true });
   await webhook(req.body);
   res.json({ ok: true });
 }

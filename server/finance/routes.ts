@@ -4,6 +4,7 @@ import { ingestEmail, ingestGithub, verifyGithubSignature, verifyIntakeToken } f
 import { createProject, feActivity, project, projects, signals } from "./store.js";
 import { decide, plan, plans, scanProject } from "./plans.js";
 import "./invoice-step.js";
+import { authorizeHold, createHoldOrder, holdInfo, reauthorizeDue, voidHold } from "./money.js";
 import { object } from "../db.js";
 
 // A fresh signal for a known project wakes the detector; the human sees a plan card, nothing moves yet.
@@ -35,5 +36,12 @@ export function mountFinance(api: Router, extra?: (api: Router) => void) {
   api.get("/finance/plans", (req, res) => res.json(plans(req.query.status as string | undefined)));
   api.post("/finance/plans/:id", wrap(async (req: any, res: any) => { try { res.json(await decide(req.params.id, req.body?.decision === "reject" ? "reject" : "approve")); } catch (e) { bad(res, e); } }));
   api.get("/finance/plans/:id/evidence", (req, res) => { const e = object("evidence:" + req.params.id); e ? res.json(e) : res.sendStatus(404); });
+  // Client hold page (public): PayPal JS SDK with intent=authorize.
+  api.get("/hold/:id", (req, res) => { try { res.json(holdInfo(req.params.id)); } catch (e: any) { res.status(404).json({ error: e.message }); } });
+  api.post("/hold/:id/order", wrap(async (req: any, res: any) => { try { res.json(await createHoldOrder(req.params.id)); } catch (e) { bad(res, e); } }));
+  api.post("/hold/:id/authorize", wrap(async (req: any, res: any) => { try { res.json(await authorizeHold(req.params.id, String(req.body?.order_id || ""))); } catch (e) { bad(res, e); } }));
+  api.post("/finance/projects/:id/hold/void", wrap(async (req: any, res: any) => { try { res.json(await voidHold(req.params.id)); } catch (e) { bad(res, e); } }));
+  api.post("/finance/reauthorize-due", wrap(async (_req: any, res: any) => res.json(await reauthorizeDue())));
+  if (process.env.FINANCE_SWEEP !== "0") setInterval(() => reauthorizeDue().catch(e => console.error("reauth sweep", e.message)), 3600_000).unref();
   extra?.(api);
 }

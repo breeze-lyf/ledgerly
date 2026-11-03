@@ -23,6 +23,13 @@ export interface PayPalClient {
   getRefund(id: string): Promise<any>;
   getCapture(id: string): Promise<any>;
   verifyWebhookSignature(body: Body): Promise<any>;
+  authorizeOrder(id: string): Promise<any>;
+  getAuthorization(id: string): Promise<any>;
+  captureAuthorization(id: string, body: Body, requestId: string): Promise<any>;
+  reauthorizeAuthorization(id: string, body: Body, requestId: string): Promise<any>;
+  voidAuthorization(id: string): Promise<any>;
+  createPayout(body: Body, requestId: string): Promise<any>;
+  getPayout(batchId: string): Promise<any>;
 }
 export class SandboxPayPalClient implements PayPalClient {
   private token = "";
@@ -158,6 +165,27 @@ export class SandboxPayPalClient implements PayPalClient {
       b,
     );
   }
+  authorizeOrder(id: string) {
+    return this.request(`/v2/checkout/orders/${encodeURIComponent(id)}/authorize`, "POST", {}, "ledgerly-authorize-" + id);
+  }
+  getAuthorization(id: string) {
+    return this.request("/v2/payments/authorizations/" + encodeURIComponent(id));
+  }
+  captureAuthorization(id: string, b: Body, requestId: string) {
+    return this.request(`/v2/payments/authorizations/${encodeURIComponent(id)}/capture`, "POST", b, requestId);
+  }
+  reauthorizeAuthorization(id: string, b: Body, requestId: string) {
+    return this.request(`/v2/payments/authorizations/${encodeURIComponent(id)}/reauthorize`, "POST", b, requestId);
+  }
+  voidAuthorization(id: string) {
+    return this.request(`/v2/payments/authorizations/${encodeURIComponent(id)}/void`, "POST", undefined, "ledgerly-void-" + id);
+  }
+  createPayout(b: Body, requestId: string) {
+    return this.request("/v1/payments/payouts", "POST", b, requestId);
+  }
+  getPayout(batchId: string) {
+    return this.request("/v1/payments/payouts/" + encodeURIComponent(batchId));
+  }
 }
 export class MockPayPalClient implements PayPalClient {
   async getAccessToken() {
@@ -277,6 +305,54 @@ export class MockPayPalClient implements PayPalClient {
   async verifyWebhookSignature() {
     return { verification_status: "SUCCESS" };
   }
+  async authorizeOrder(id: string) {
+    const o = this.get(id);
+    const existing = o.purchase_units?.[0]?.payments?.authorizations?.[0];
+    if (existing) return o;
+    if (o.intent !== "AUTHORIZE") throw Error("ACTION_DOES_NOT_MATCH_INTENT");
+    if (o.status !== "APPROVED") throw Error("ORDER_NOT_APPROVED");
+    const auth = saveObject({ id: "AUTH-" + randomUUID().slice(0, 12), status: "CREATED", amount: o.purchase_units[0].amount, captured: 0, create_time: new Date().toISOString(), expiration_time: new Date(Date.now() + 29 * 864e5).toISOString(), reauthorized: false, custom_id: o.purchase_units[0].custom_id });
+    return saveObject({ ...o, status: "COMPLETED", purchase_units: [{ ...o.purchase_units[0], payments: { authorizations: [auth] } }] });
+  }
+  async getAuthorization(id: string) { return this.get(id); }
+  async captureAuthorization(id: string, b: Body, requestId: string) {
+    const prior = object("mockreq:" + requestId); if (prior) return this.get(prior.capture_id);
+    const a = this.get(id);
+    if (!["CREATED", "PARTIALLY_CAPTURED"].includes(a.status)) throw Error("PayPal 422: AUTHORIZATION_ALREADY_CAPTURED_OR_VOIDED (" + a.status + ")");
+    const value = Number(b.amount?.value ?? a.amount.value);
+    if (a.captured + value > Number(a.amount.value) + 0.001) throw Error("PayPal 422: MAX_CAPTURE_AMOUNT_EXCEEDED");
+    const cap = saveObject({ id: "CAP-" + randomUUID().slice(0, 12), status: "COMPLETED", amount: { currency_code: a.amount.currency_code, value: value.toFixed(2) }, final_capture: !!b.final_capture, authorization_id: id, invoice_id: b.invoice_id });
+    const captured = Math.round((a.captured + value) * 100) / 100;
+    saveObject({ ...a, captured, status: b.final_capture || captured + 0.001 >= Number(a.amount.value) ? "CAPTURED" : "PARTIALLY_CAPTURED" });
+    saveObject({ id: "mockreq:" + requestId, capture_id: cap.id });
+    return cap;
+  }
+  async reauthorizeAuthorization(id: string, b: Body, requestId: string) {
+    const prior = object("mockreq:" + requestId); if (prior) return this.get(prior.auth_id);
+    const a = this.get(id);
+    const age = (Date.now() - Date.parse(a.create_time)) / 864e5;
+    if (a.reauthorized || age < 3 || age > 29) throw Error("PayPal 422: REAUTHORIZATION_TOO_SOON: A reauthorization is only allowed once from Day 4 to Day 29 since the date of the original authorization.");
+    const n = saveObject({ id: "AUTH-" + randomUUID().slice(0, 12), status: "CREATED", amount: b.amount, captured: 0, create_time: new Date().toISOString(), expiration_time: a.expiration_time, reauthorized: true, parent: id });
+    saveObject({ ...a, reauthorized: true });
+    saveObject({ id: "mockreq:" + requestId, auth_id: n.id });
+    return n;
+  }
+  async voidAuthorization(id: string) {
+    const a = this.get(id);
+    if (a.status === "VOIDED") return {};
+    if (a.status === "CAPTURED") throw Error("PayPal 422: AUTHORIZATION_ALREADY_CAPTURED");
+    saveObject({ ...a, status: "VOIDED" }); return {};
+  }
+  async createPayout(b: Body, requestId: string) {
+    const prior = object("mockreq:" + requestId); if (prior) return { batch_header: this.get(prior.batch_id).batch_header };
+    if (object("payout-sender:" + b.sender_batch_header.sender_batch_id)) throw Error("PayPal 400: SENDER_BATCH_ID_ALREADY_USED");
+    const id = "PB-" + randomUUID().slice(0, 10).toUpperCase();
+    const batch = saveObject({ id, batch_header: { payout_batch_id: id, batch_status: "PENDING", sender_batch_header: b.sender_batch_header }, items: b.items.map((i: any) => ({ payout_item_id: "PI-" + randomUUID().slice(0, 8), transaction_status: "PENDING", payout_item: i })) });
+    saveObject({ id: "payout-sender:" + b.sender_batch_header.sender_batch_id, batch_id: id });
+    saveObject({ id: "mockreq:" + requestId, batch_id: id });
+    return { batch_header: batch.batch_header };
+  }
+  async getPayout(batchId: string) { return this.get(batchId); }
 }
 export const directPayPal: PayPalClient = mock
   ? new MockPayPalClient()

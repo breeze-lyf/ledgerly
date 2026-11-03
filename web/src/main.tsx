@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
-import { PayPage, AutopilotPanel, FinancePanel, OutcomesStrip, RetainersPanel, describeAction } from "./extras";
+import { PayPage, AutopilotPanel, FinancePanel, HoldPage, OutcomesStrip, RetainersPanel, describeAction } from "./extras";
 declare global {
   interface Window {
     __BASE_PATH__: string;
@@ -680,4 +680,5 @@ function App() {
   );
 }
 const payMatch = location.pathname.slice(base.length - 1).match(/^\/pay\/([^/]+)/);
-createRoot(document.getElementById("root")!).render(payMatch ? <PayPage refId={decodeURIComponent(payMatch[1])} /> : <App />);
+const holdMatch = location.pathname.slice(base.length - 1).match(/^\/hold\/([^/]+)/);
+createRoot(document.getElementById("root")!).render(payMatch ? <PayPage refId={decodeURIComponent(payMatch[1])} /> : holdMatch ? <HoldPage projectId={decodeURIComponent(holdMatch[1])} /> : <App />);
