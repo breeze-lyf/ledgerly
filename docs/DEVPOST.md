@@ -5,7 +5,7 @@
 
 **Demo URL:** https://ledgerly.yufeng.fun/ (PayPal sandbox, no login)
 **Repository:** https://github.com/breeze-lyf/ledgerly (public, MIT)
-**Video (YouTube, public, < 3 min):** https://youtu.be/<VIDEO_ID> (TODO: add after upload)
+**Video (YouTube, public, < 3 min):** https://youtu.be/dARUVGgTeiY
 
 ## Inspiration
 Freelancers do a second, unpaid job: they chase payments, split money with collaborators and lose disputes because the proof is scattered across GitHub, email and chat. We didn't want another invoicing chatbot. We wanted a finance employee that has already done the work by the time you look.

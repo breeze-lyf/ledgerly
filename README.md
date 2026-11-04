@@ -243,7 +243,7 @@ Sandbox mode sends requests to PayPal's sandbox and verifies webhook signatures 
 
 [Deployment guide](docs/DEPLOY.md) covers the prepared systemd unit, root-path nginx configuration, public webhook route, and explicitly gated upload script. Deployment is a separate operator action.
 
-[Devpost submission](docs/DEVPOST.md) · [Demo video script](docs/VIDEO_SCRIPT.md)
+[Demo video](https://youtu.be/dARUVGgTeiY) · [Devpost submission](docs/DEVPOST.md) · [Demo video script](docs/VIDEO_SCRIPT.md)
 
 ## License
 
