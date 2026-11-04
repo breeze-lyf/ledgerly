@@ -11,7 +11,7 @@ Not deployed yet. Main stays deployable until this branch is merged.
 | `DEMO_TOOLS` | demo only | `1` for the judged demo, unset otherwise | Enables `POST /api/dev/finance-dispute` (simulated dispute, labelled "simulated") in sandbox mode |
 | `DISPUTE_SUBMIT` | no | leave unset | `1` sends evidence to PayPal `provide-evidence`; not verified in sandbox (needs a buyer-opened dispute) |
 | `FINANCE_SWEEP` | no | unset (on) | Hourly day-4 reauthorization sweep + 10-minute payout status poll; `0` disables |
-| `PUBLIC_URL` | already present | `https://ledgerly.yufeng.fun` | Used in hold/funding links sent to the client's agent |
+| `PUBLIC_URL` | no | defaults to `https://ledgerly.yufeng.fun` | Base for hold/funding links and PayPal return URLs |
 
 Existing variables are unchanged (`PAYPAL_*`, `LLM_*`, `MCP_TOKEN`, `PAYPAL_WEBHOOK_ID`, …). The client-agent MCP endpoint
 `/mcp/client` needs no env var: it authenticates with per-project tokens issued from the Finance employee tab.

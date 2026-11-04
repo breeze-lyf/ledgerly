@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { object, saveObject } from "../db.js";
 import { feLog, money, project, projects, saveProject, type Project } from "./store.js";
 import { base } from "../config.js";
+import { publicUrl } from "../lifecycle.js";
 import { learn, type ClientMemory } from "./memory.js";
 import { createHoldOrder } from "./money.js";
 
@@ -84,5 +85,5 @@ export async function acceptTerms(p: Project, offerId: string) {
   const o = t.deposit_pct > 0 ? await createHoldOrder(p.id) : null;
   return { status: "agreed", terms: t, funding: fundingFor(project(p.id)!), order_id: o?.id };
 }
-const fundingFor = (p: Project) => p.hold ? { amount: p.hold.amount, currency: p.currency, status: p.hold.status, link: (process.env.PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "") + base + `hold/${p.id}`, note: "A person at the client approves this in PayPal; agents cannot move the money." } : null;
+const fundingFor = (p: Project) => p.hold ? { amount: p.hold.amount, currency: p.currency, status: p.hold.status, link: publicUrl() + base + `hold/${p.id}`, note: "A person at the client approves this in PayPal; agents cannot move the money." } : null;
 export const negotiation = (projectId: string) => object("fe-nego:" + projectId) || null;

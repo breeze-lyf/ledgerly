@@ -2,6 +2,7 @@
 // card/PayPal authorization hold, not escrow). Each approved milestone is a partial capture (final_capture=false
 // until the last). A single reauthorization is scheduled on day 4 (PayPal allows it once, days 4–29). Payouts split
 // captured money to subcontractors. All PayPal calls carry deterministic PayPal-Request-Ids for idempotency.
+import { publicUrl } from "../lifecycle.js";
 import { base } from "../config.js";
 import { db, object, saveObject } from "../db.js";
 import { paypal } from "../paypal/index.js";
@@ -37,7 +38,7 @@ export async function createHoldOrder(projectId: string) {
   feLog(p.id, "hold", `Hold requested: ${amount.toFixed(2)} ${p.currency} (PayPal order ${o.id})`);
   return { id: o.id, approve_url: o.links?.find((l: any) => ["approve", "payer-action"].includes(l.rel))?.href };
 }
-const absolute = (path: string) => (process.env.PUBLIC_URL || "http://localhost:3000").replace(/\/$/, "") + base + path;
+const absolute = (path: string) => publicUrl() + base + path;
 
 export async function authorizeHold(projectId: string, orderId: string) {
   const p = project(projectId);
