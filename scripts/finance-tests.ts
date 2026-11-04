@@ -258,5 +258,6 @@ const { weekly } = await import("../server/finance/weekly.js");
 const w = weekly();
 assert.ok(w.collected.USD >= 800, JSON.stringify(w.collected)); assert.ok(w.ai_actions > w.human_approvals); assert.ok(w.hours_saved > 0);
 assert.equal(w.actions.negotiation_round, 2); assert.ok(w.actions.dispute_pack >= 2); assert.match(w.assumption.note, /assumption/);
+const sp = await money4.syncPayouts(); assert.ok(sp.length > 0 && sp.every((x: any) => x.status && !x.error), JSON.stringify(sp));
 console.log("day 6 agent-to-agent negotiation + weekly view tests passed", JSON.stringify({ collected: w.collected, ai_actions: w.ai_actions, approvals: w.human_approvals, hours_saved: w.hours_saved }));
 server.close();

@@ -148,7 +148,7 @@ Claude Desktop (`claude_desktop_config.json`) on the client's side:
   "mcpServers": {
     "ledgerly-client": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://<host>/mcp/client", "--header", "Authorization: Bearer ${LEDGERLY_CLIENT_TOKEN}"],
+      "args": ["-y", "mcp-remote", "https://<host>/mcp/client", "--transport", "http-only", "--header", "Authorization: Bearer ${LEDGERLY_CLIENT_TOKEN}"],
       "env": { "LEDGERLY_CLIENT_TOKEN": "lc_…" }
     }
   }

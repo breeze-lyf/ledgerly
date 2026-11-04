@@ -3,7 +3,7 @@
 // until the last). A single reauthorization is scheduled on day 4 (PayPal allows it once, days 4–29). Payouts split
 // captured money to subcontractors. All PayPal calls carry deterministic PayPal-Request-Ids for idempotency.
 import { base } from "../config.js";
-import { object, saveObject } from "../db.js";
+import { db, object, saveObject } from "../db.js";
 import { paypal } from "../paypal/index.js";
 import { holdRemaining, plans, resume, runners, savePlan } from "./plans.js";
 import { onDispute } from "./disputes.js";
@@ -26,6 +26,11 @@ export async function createHoldOrder(projectId: string) {
   if (p.hold?.status === "active") throw Error("funds are already held for this project");
   const amount = money(unreleased(p) * (((p as any).terms?.deposit_pct ?? 100) / 100));
   if (!(amount > 0)) throw Error("nothing left to hold");
+  // Reuse an unpaid order for the same amount (e.g. created when terms were agreed) instead of orphaning it.
+  if (p.hold?.status === "created" && p.hold.order_id && p.hold.amount === amount) {
+    const ex = await paypal.getOrder(p.hold.order_id).catch(() => null);
+    if (ex && ["CREATED", "PAYER_ACTION_REQUIRED", "APPROVED"].includes(ex.status)) return { id: ex.id, approve_url: ex.links?.find((l: any) => ["approve", "payer-action"].includes(l.rel))?.href };
+  }
   const o = await paypal.createOrder({ intent: "AUTHORIZE", purchase_units: [{ reference_id: p.id, custom_id: p.id, description: `${p.title}: held for ${p.milestones.filter(m => m.status !== "released").length} milestones`.slice(0, 127), amount: { currency_code: p.currency, value: amount.toFixed(2) } }],
     application_context: { shipping_preference: "NO_SHIPPING", user_action: "CONTINUE", return_url: absolute(`hold/${p.id}?approved=1`), cancel_url: absolute(`hold/${p.id}`) } });
   p.hold = { status: "created", order_id: o.id, amount, captured: 0, captures: [] }; saveProject(p);
@@ -159,4 +164,23 @@ export async function financeWebhook(e: any) {
     return true;
   }
   return false;
+}
+
+// Webhook fallback: poll payout batches that haven't reached a final state (e.g. no public webhook URL).
+export async function syncPayouts() {
+  const out: any[] = [];
+  for (const r of db.prepare("SELECT data FROM paypal_objects WHERE id LIKE 'fe-payout:%'").all() as any[]) {
+    const rec = JSON.parse(r.data); const id = rec.id.slice("fe-payout:".length);
+    if (["SUCCESS", "DENIED", "CANCELED"].includes(rec.status)) continue;
+    try {
+      const b = await paypal.getPayout(id);
+      const status = b.batch_header?.batch_status; const items = (b.items || []).map((i: any) => i.transaction_status);
+      if (status && (status !== rec.status || JSON.stringify(items) !== JSON.stringify(rec.items))) {
+        saveObject({ ...rec, status, items, last_event: "poll" });
+        feLog(rec.project_id, "payout", `Payout ${id}: batch ${status.toLowerCase()}${items.length ? ` (${items.join(", ").toLowerCase()})` : ""}`);
+      }
+      out.push({ id, status, items });
+    } catch (e: any) { out.push({ id, error: e.message }); }
+  }
+  return out;
 }

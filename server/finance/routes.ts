@@ -8,7 +8,7 @@ import { memories } from "./memory.js";
 import { weekly } from "./weekly.js";
 import { clientToken, negotiation } from "./negotiate.js";
 import { onDispute } from "./disputes.js";
-import { authorizeHold, createHoldOrder, holdInfo, reauthorizeDue, voidHold } from "./money.js";
+import { authorizeHold, createHoldOrder, holdInfo, reauthorizeDue, syncPayouts, voidHold } from "./money.js";
 import { object } from "../db.js";
 
 // A fresh signal for a known project wakes the detector; the human sees a plan card, nothing moves yet.
@@ -46,7 +46,11 @@ export function mountFinance(api: Router, extra?: (api: Router) => void) {
   api.post("/hold/:id/authorize", wrap(async (req: any, res: any) => { try { res.json(await authorizeHold(req.params.id, String(req.body?.order_id || ""))); } catch (e) { bad(res, e); } }));
   api.post("/finance/projects/:id/hold/void", wrap(async (req: any, res: any) => { try { res.json(await voidHold(req.params.id)); } catch (e) { bad(res, e); } }));
   api.post("/finance/reauthorize-due", wrap(async (_req: any, res: any) => res.json(await reauthorizeDue())));
-  if (process.env.FINANCE_SWEEP !== "0") setInterval(() => reauthorizeDue().catch(e => console.error("reauth sweep", e.message)), 3600_000).unref();
+  api.post("/finance/sync-payouts", wrap(async (_req: any, res: any) => res.json(await syncPayouts())));
+  if (process.env.FINANCE_SWEEP !== "0") {
+    setInterval(() => reauthorizeDue().catch(e => console.error("reauth sweep", e.message)), 3600_000).unref();
+    setInterval(() => syncPayouts().catch(e => console.error("payout sync", e.message)), 600_000).unref();
+  }
   api.get("/finance/weekly", (_req, res) => res.json(weekly()));
   api.get("/finance/projects/:id/negotiation", (req, res) => res.json(negotiation(req.params.id)));
   // Issue (or rotate) the client-agent token. Shown once to the freelancer, who passes it to the client.
