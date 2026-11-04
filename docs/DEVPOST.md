@@ -1,40 +1,70 @@
 # Devpost submission fields — Ledgerly
 
 **Project name:** Ledgerly
-**Tagline (elevator pitch):** A chat-native PayPal invoicing agent for freelancers: draft, send, chase, reconcile and refund invoices by just asking — with a human confirm on every money move.
+**Tagline (elevator pitch):** An AI finance employee for freelancers. It watches your GitHub and inbox, decides what to bill, holds client funds with PayPal, pays your collaborators and prepares dispute evidence. You just approve.
 
 **Demo URL:** https://ledgerly.yufeng.fun/ (PayPal sandbox, no login)
 **Repository:** https://github.com/breeze-lyf/ledgerly (public, MIT)
 **Video (YouTube, public, < 3 min):** https://youtu.be/<VIDEO_ID> (TODO: add after upload)
 
 ## Inspiration
-Freelancers have a second unpaid job: writing invoices, chasing late payments and figuring out who still owes what. We wanted that follow-through to feel as easy as a conversation, while keeping the person in control of anything that moves money.
+Freelancers do a second, unpaid job: they chase payments, split money with collaborators and lose disputes because the proof is scattered across GitHub, email and chat. We didn't want another invoicing chatbot. We wanted a finance employee that has already done the work by the time you look.
 
 ## What it does
-Type "Invoice Acme $800/month maintenance for 3 months" and Ledgerly creates PayPal sandbox draft invoices, shows a review card, and sends them through PayPal Invoicing only after you confirm. Payments arrive via verified PayPal webhooks and update a live timeline. A **Collections agent** finds overdue and near-due invoices and proposes friendly → firm → final reminders; a **cashflow dashboard** shows outstanding, overdue, next-7-day and received totals plus heuristic client risk. You can ask "Who hasn't paid this month?", record off-PayPal payments, create PayPal Orders payment links, and issue confirmed partial refunds with remaining-balance checks.
+- **Intake:** a merged PR (GitHub webhook, HMAC-verified) and the client's "looks good, approved" email arrive through intake. Ledgerly's feed shows what it *noticed* and what it *decided*.
+- **Plan card:** each decision becomes one card with its evidence and an exact plan. Example: "Capture $98 of the $196 held via PayPal".
+- **Approve:** one click runs the steps visibly. Ledgerly makes a partial capture on the PayPal authorization hold, pays the collaborator's share via PayPal Payouts and marks the milestone PAID.
+- **Dispute defense:** when a client disputes, Ledgerly builds an evidence pack (PDF with the PR, the approval email and the timeline) that is **ready to file**. Submitting it to PayPal is not automated.
+- **Agent-to-agent negotiation:** Ledgerly is an MCP server. A client's AI agent can negotiate terms over MCP. Discount, hold percentage and payment terms are bounded **in code** by client memory, not by a prompt, so Ledgerly counters out-of-bounds asks. Once terms are accepted, the client funds an authorization hold in the PayPal popup.
+- **Client memory:** after a dispute, a client automatically flips to hold-first with shorter terms.
+- **Weekly report:** money collected, actions taken, human clicks and an *estimate* of hours saved.
 
 ## How we built it
-React + TypeScript + Vite front end; Node/Express API with SQLite and SSE. The **PayPal Agent Toolkit** (`@paypal/agent-toolkit` 1.11.0) supplies 17 tool schemas (13 invoice/order/refund tools plus read-only disputes, transaction search and subscription details) to an OpenAI-compatible LLM with tool calling; Ledgerly adds 12 higher-level tools (collections run, what needs collecting, cashflow, order and invoice refunds, invoice series, reminder drafting, reconciliation, clarification, and create/cancel/list retainers). Recurring work can be billed as a real PayPal subscription (Catalog Product → Plan → Subscription with a client approval link, tracked by subscription webhooks), and Ledgerly is itself an MCP server with 15 tools, so any outside agent can read receivables and propose actions that a human confirms. Clients pay from a hosted pay page using the PayPal JS SDK; capture, refund and denial webhooks plus a periodic sync keep invoice state correct, and an opt-in Autopilot sends guarded, LLM-written reminders with a human-approval threshold. Calls run against PayPal sandbox: Invoicing v2, Orders v2, Payments v2 refunds, Catalog Products and Billing Subscriptions v1, Disputes and Transaction Search (read-only), OAuth2 and Webhooks signature verification. A deterministic fallback keeps the demo working if the LLM is unreachable. Deployed with nginx + systemd.
+- **Front end:** React + TypeScript + Vite.
+- **Back end:** Node/Express with SQLite and SSE for the live feed.
+- **PayPal (sandbox):**
+  - Orders v2 with intent AUTHORIZE (authorization holds, up to 29 days)
+  - partial captures and voids (Payments v2)
+  - Payouts for collaborator splits
+  - Invoicing v2, Subscriptions, Webhooks signature verification
+  - the JS SDK on the hosted hold page
+  - the PayPal Agent Toolkit for tool schemas
+- **Intake endpoints:** GitHub (HMAC) and email (Bearer).
+- **LLM:** an OpenAI-compatible LLM classifies intake and drafts plans. A deterministic policy layer enforces every money limit. MCP endpoints use per-project client tokens.
+- **Deploy:** nginx + systemd.
 
 ## Challenges we ran into
-Financial intent needs more than a plausible answer: separating draft creation from send confirmation, validating refund balances, mapping PayPal webhook events to invoice state, and reconciling toolkit tool shapes with our own validated client.
+- Keeping the AI useful but never in charge of the limits: negotiation bounds and capture amounts are validated in code.
+- Mapping milestones to partial captures on a single authorization.
+- Wording things honestly: a hold is not escrow, and dispute evidence is prepared, not auto-filed.
 
 ## Accomplishments that we're proud of
-A full sandbox loop — chat draft → confirmed send → reminder → payment → reconciliation → partial refund → cancel — passes an automated end-to-end test against the real PayPal sandbox, and is live for judges.
+- A live loop on the PayPal sandbox: intake → decision → approve → partial capture → payout, plus a real MCP negotiation run that ends with a funded hold.
+- In the week we recorded the demo: $358 collected, 25 AI actions, 4 human clicks.
 
 ## What we learned
-A trustworthy financial agent must make its work inspectable: tool chips, review cards, persistent timelines and explicit confirmation matter as much as language quality.
+Trust comes from visible work: show what was noticed, what was decided and the evidence behind it, then ask for one click.
 
 ## What's next for Ledgerly
-Subscriptions API for true recurring billing, scheduled reminder policies, accounting exports, multi-tenant auth, and a production readiness review.
+- Filing dispute evidence through the Disputes API, with approval
+- More intake sources (Linear, Slack)
+- Multi-tenant auth
+- Accounting exports
 
 ## Built With
-paypal-invoicing-api, paypal-orders-api, paypal-payments-api, paypal-webhooks, paypal-agent-toolkit, paypal-subscriptions-api, paypal-js-sdk, model-context-protocol, openai-compatible-llm, typescript, react, vite, node.js, express, sqlite, server-sent-events, playwright, nginx
+paypal-orders-api, paypal-payments-api, paypal-payouts-api, paypal-invoicing-api, paypal-webhooks, paypal-js-sdk, paypal-agent-toolkit, model-context-protocol, openai-compatible-llm, typescript, react, vite, node.js, express, sqlite, server-sent-events, playwright, nginx
 
 ## Testing instructions (for judges)
-Open https://ledgerly.yufeng.fun/ — no account needed, sandbox only, no real money. Try: `Invoice Globex $250 for logo design, billing@globex-example.com` → Confirm; open the invoice → Remind; `Record payment $250 for <id>`; `What needs collecting?`; `Cashflow this month`; `Refund $50 to <id>` → Confirm. Local run: see README Quickstart (mock mode needs no credentials; sandbox mode needs your own PayPal sandbox app keys).
+1. Open https://ledgerly.yufeng.fun/. No account is needed; it runs on the sandbox only, with no real money.
+2. Open the Finance employee tab, review a pending card's evidence and click Approve to watch the steps run.
+3. Open a project's hold page to fund a sandbox authorization with a PayPal sandbox buyer account.
+
+For a local run, see the README Quickstart.
 
 ## AI tools used
-
-- In the product: OpenAI-compatible LLM (Zhipu GLM) for tool calling and reminder writing; PayPal Agent Toolkit 1.11.0.
-- While building: AI coding assistants (Cursor agents) for code, tests and docs.
+- **In the product:**
+  - an OpenAI-compatible LLM (Zhipu GLM) for intake classification, plan drafting and negotiation messages
+  - PayPal Agent Toolkit
+  - Model Context Protocol, for agent-to-agent negotiation
+- **While building:** AI coding agents (Cursor) for code, tests, docs and the demo video pipeline.
+- **Demo video:** edge-tts for the voiceover. Music and sound effects were generated procedurally by us; no third-party audio was used.
