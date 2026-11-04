@@ -125,6 +125,39 @@ Local (stdio), e.g. Claude Desktop / Cursor `mcpServers` entry:
 
 Remote (Streamable HTTP): set `MCP_TOKEN` on the server, then point a client at `https://<host>/mcp` with `Authorization: Bearer <MCP_TOKEN>`. Without `MCP_TOKEN` the endpoint returns 404.
 
+### Client-agent MCP (agent-to-agent terms)
+
+The finance employee also negotiates with the **client's** AI agent. Each project gets a client token
+(`POST /api/finance/projects/:id/client-token`, shown once in the Finance employee tab). The client's agent gets four tools:
+`get_quote`, `propose_terms`, `accept_terms`, `get_funding_status`. Ledgerly accepts or counters **inside bounds set in code**
+(`server/finance/negotiate.ts`). The bounds come from what Ledgerly has learned about the client's payment history:
+
+| Client memory | Max discount | Min held up front | Max terms |
+|---|---|---|---|
+| trusted (paid 2+ invoices in ≤5 days, never late) | 3% (only if 100% is held) | 0% | net-15 |
+| standard | 2% (only if 100% is held) | 30% | net-7 |
+| hold-first (late twice, >21 days on average, or a dispute) | 0% | 100% | net-3 |
+
+Neither LLM can push the terms past these limits. Accepting returns a PayPal link, and **a person at the client approves the hold**:
+it is a PayPal authorization, not escrow, and no agent can move the money.
+
+Claude Desktop (`claude_desktop_config.json`) on the client's side:
+
+```json
+{
+  "mcpServers": {
+    "ledgerly-client": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://<host>/mcp/client", "--transport", "http-only", "--header", "Authorization: Bearer ${LEDGERLY_CLIENT_TOKEN}"],
+      "env": { "LEDGERLY_CLIENT_TOKEN": "lc_…" }
+    }
+  }
+}
+```
+
+For a local demo against your own checkout: `{ "command": "npm", "args": ["run", "-s", "mcp:client"], "cwd": "/path/to/ledgerly", "env": { "LEDGERLY_CLIENT_TOKEN": "lc_…" } }`.
+Then ask: *"Get Ledgerly's quote for the portal and negotiate the best terms you can; we can hold the full amount."*
+
 ## Features
 
 - Draft invoices and a three-month recurring series with confirm-before-send.

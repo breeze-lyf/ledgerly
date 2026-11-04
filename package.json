@@ -12,6 +12,7 @@
     "build": "npm run build:web && tsc -p tsconfig.server.json",
     "start": "node dist/index.js",
     "seed:sandbox": "node scripts/seed-sandbox.mjs",
+    "seed:finance": "node scripts/seed-finance.mjs",
     "seed": "tsx scripts/seed.ts",
     "reset": "tsx scripts/reset.ts",
     "smoke": "bash scripts/smoke.sh",
@@ -21,10 +22,12 @@
     "webhook:simulate": "node scripts/simulate-webhook.mjs",
     "test:orders": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: tsx scripts/order-tests.ts",
     "test:lifecycle": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/lifecycle-tests.ts",
-    "test": "npm run test:orders && npm run test:lifecycle && npm run test:retainers",
+    "test": "npm run test:orders && npm run test:lifecycle && npm run test:retainers && npm run test:finance",
     "test:retainers": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/retainer-mcp-tests.ts",
     "mcp": "tsx server/mcp-stdio.ts",
-    "mcp:start": "node dist/mcp-stdio.js"
+    "mcp:start": "node dist/mcp-stdio.js",
+    "mcp:client": "tsx server/mcp-client-stdio.ts",
+    "test:finance": "PAYPAL_ENV_FILE=/nonexistent PAYPAL_MODE=mock DB_PATH=:memory: DISABLE_LLM=1 tsx scripts/finance-tests.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
