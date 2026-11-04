@@ -63,7 +63,8 @@ runners.capture_hold = async (s, plan, proj) => {
   if (proj.hold.expires_at && Date.now() > Date.parse(proj.hold.expires_at)) throw Error("the authorization has expired; send an invoice instead");
   const final = !!s.final || Math.abs(remaining - (s.amount || 0)) < 0.01;
   const c = await paypal.captureAuthorization(proj.hold.authorization_id, { amount: { currency_code: proj.currency, value: s.amount!.toFixed(2) }, final_capture: final,
-    invoice_id: `${proj.id}-${plan.milestone_id}`.slice(0, 127), note_to_payer: `Milestone ${plan.milestone_id} released` }, `ledgerly-cap-${plan.id}`);
+    // invoice_id must be unique per PayPal account, so it carries the authorization (ids repeat across demo databases).
+    invoice_id: `${proj.id}-${plan.milestone_id}-${proj.hold.authorization_id}`.slice(0, 127), note_to_payer: `Milestone ${plan.milestone_id} released` }, `ledgerly-cap-${plan.id}-${proj.hold.authorization_id}`);
   if (!["COMPLETED", "PENDING"].includes(c.status)) throw Error(`capture ${c.status}`);
   const fresh = project(proj.id)!;
   if (!fresh.hold.captures.some((x: any) => x.id === c.id)) { fresh.hold.captures.push({ id: c.id, amount: s.amount, milestone_id: plan.milestone_id, status: c.status }); fresh.hold.captured = money(fresh.hold.captured + s.amount!); }

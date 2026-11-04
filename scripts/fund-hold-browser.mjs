@@ -24,9 +24,13 @@ export async function fundViaBrowser(holdUrl, { screenshot } = {}) {
     const opt = async (sel, v) => { const l = pop.locator(sel + ':visible').first(); if (await l.count()) await l.fill(v); };
     const ph = pop.getByLabel('Phone number').first(); await ph.click(); await ph.press('End'); await ph.pressSequentially('4085550100', { delay: 30 }); await opt('input[name=email]', `demo-client-${Date.now()}@example.com`);
     // Some PayPal layouts default "Save info & create your PayPal account" to on; turn it off to pay as a guest.
-    const save = pop.locator('input[type=checkbox]:checked').filter({ visible: true });
-    for (const c of await save.all()) await c.uncheck({ force: true }).catch(() => {});
-    if (await pop.getByText(/create your paypal account/i).count()) { const sw = pop.getByRole('switch'); if (await sw.count() && (await sw.first().getAttribute('aria-checked')) === 'true') await sw.first().click(); }
+    const createBtn = pop.locator('button:visible').filter({ hasText: /create account/i });
+    for (let i = 0; i < 3 && await createBtn.count(); i++) {
+      const box = await pop.locator('input[type=checkbox]').evaluateAll(es => { const e = es.find(x => x.checked); if (!e) return null; const t = (e.closest('label') || e.parentElement); const r = t.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, id: e.id }; });
+      if (box?.id) await pop.locator(`label[for="${box.id}"]`).first().click({ timeout: 3000 }).catch(() => {});
+      if (await createBtn.count() && box) await pop.mouse.click(box.x, box.y);
+      await pop.waitForTimeout(800);
+    }
     const submit = pop.locator('button:visible').filter({ hasText: /as guest|^\s*continue\s*$|pay now/i }).filter({ hasNotText: /create account/i }).last();
     await submit.waitFor({ timeout: 15000 }).catch(async (e) => { console.error('buttons:', await pop.locator('button:visible').allInnerTexts()); throw e; });
     await submit.click();
